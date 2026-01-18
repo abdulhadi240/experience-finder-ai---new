@@ -1,0 +1,61 @@
+Log in to ECR -
+
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 087307346846.dkr.ecr.us-east-1.amazonaws.com
+
+
+Build docker image -
+
+Builds a ARM64 image -
+
+#docker build -t agentic-api .
+
+Build for amd64 -  build a cross-platform image for ECS
+
+Push directly to ECS
+
+docker buildx build --platform linux/amd64 -t 087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:latest --push .
+
+
+docker buildx create --use
+
+docker buildx build --platform linux/amd64 -t agentic-api .
+
+
+Tag the image for your ECR repo -
+
+docker tag agentic-api:latest 087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:latest
+
+Push it to ECR -
+
+docker push 087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:latest
+
+
+cd infra
+terraform init
+
+terraform apply -auto-approve
+
+if .tfvars file doesn't exist - 
+
+terraform plan -var='container_image=<acct>.dkr.ecr.us-east-1.amazonaws.com/agentic-api:latest'
+
+Inspect image -
+
+docker buildx imagetools inspect 087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:latest
+
+docker buildx build --platform linux/amd64 --provenance=false --attest=none -t 087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:x86 --push .
+
+cd infra
+terraform apply -var='container_image=087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:amd64' -auto-approve
+
+http://agentic-api-alb-582233985.us-east-1.elb.amazonaws.com/health
+
+Force new task definition revision manually
+You can redeploy ECS without changing infra by running:
+
+aws ecs update-service \
+  --cluster agentic-api-cluster \
+  --service agentic-api-svc \
+  --force-new-deployment \
+  --region us-east-1
+
