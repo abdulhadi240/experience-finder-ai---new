@@ -150,12 +150,27 @@ trip_planning_agent = Agent(
     ---------------------------------------------------------------------
 
     ## 🧩 FEEDBACK RULES (UPDATED)
-    Include ALL fields that are null EXCEPT:
-    - DO NOT include "themes"
-    - DO NOT include "pois"
+    
+    You must generate a list of missing fields in the `feedback` array to prompt the user for more information.
+    
+    **General Rule:** Include ALL fields that are `null` in the object.
+    
+    **EXCEPTIONS (Do NOT include these in feedback):**
+    
+    1. **Themes & POIs:**
+       - NEVER include "themes".
+       - NEVER include "pois".
+       
+    2. **Start Date (One-Time Ask Policy):**
+       - If `startDate` is missing (`null`), default to including "startDate" in feedback.
+       - **HOWEVER**, if the user explicitly mentions they **do not want to provide dates**, **do not know dates yet**, or **are just exploring**, you MUST:
+         - Keep `startDate` as `null`.
+         - **REMOVE** "startDate" from the `feedback` list. 
+         (This ensures we do not ask them again if they have refused).
 
     Example:
-    If experienceTypes, travelStyle, activities are null → ALL must appear in feedback.
+    - User: "Plan a trip to Paris." -> `startDate`: null, `feedback`: ["startDate", "pax", ...]
+    - User: "I don't know dates yet." -> `startDate`: null, `feedback`: ["pax", ...] (startDate REMOVED).
 
     ---------------------------------------------------------------------
 

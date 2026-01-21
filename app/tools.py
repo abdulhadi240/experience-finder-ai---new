@@ -4,8 +4,8 @@ from agents import (
 )
 import requests
 import json
-from typing import Dict, Any, Optional
 import threading
+from typing import Dict, Any, List
 
 @function_tool
 def customer_rag_n8n(query: str) -> Dict[str, Any]:
@@ -145,6 +145,94 @@ def rag(query: str , reference: str) -> Dict[str, Any]:
     except requests.exceptions.RequestException as e:
         raise requests.exceptions.RequestException(f"Request failed: {e}")
     
+    
+
+def place_search(queries: List[Dict[str, str]], reference: str = "hiptraveler") -> Dict[str, Any]:
+    """
+    Send a batch of place queries to the HipTraveler Places API webhook for processing.
+
+    Args:
+        queries (List[Dict[str, str]]): A list of query objects. 
+                                        Each object must have "query", "location", and "type".
+                                        Example: 
+                                        [
+                                            {"query": "Cable beach", "location": "Nassau, Bahamas", "type": "place"},
+                                            {"query": "Wild Thyme", "location": "Nassau, Bahamas", "type": "restaurant"}
+                                        ]
+        reference (str): The reference source ID (default: "hiptraveler").
+
+    Returns:
+        Dict[str, Any]: Response from the webhook containing search results.
+
+    Raises:
+        requests.exceptions.RequestException: If the request fails.
+        ValueError: If the queries list is empty.
+    """
+
+    # Validate input
+    if not queries or not isinstance(queries, list):
+        raise ValueError("Queries must be a non-empty list of dictionary objects.")
+
+    # Webhook URL (Batch Endpoint)
+    url = "https://rag.hiptraveler.com/places/batch/search"
+
+    # Prepare the payload strictly matching the required schema
+    payload = {
+        "reference": reference,
+        "queries": queries
+    }
+
+    # Headers
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    print(f"--- Sending Request ---\nURL: {url}\nPayload: {json.dumps(payload, indent=2)}")
+
+    try:
+        # Send POST request
+        response = requests.post(
+            url=url,
+            json=payload,
+            headers=headers,
+            timeout=45  # Increased timeout for batch processing
+        )
+
+        # Print Raw Response info for debugging
+        print(f"--- Response Received ---\nStatus Code: {response.status_code}")
+        print(f"Raw Text: {response.text[:500]}...") # Print first 500 chars to avoid clutter
+
+        # Raise an exception for bad status codes
+        response.raise_for_status()
+        
+        # Try to parse JSON response
+        try:
+            data = response.json()
+            # print(f"Parsed JSON: {json.dumps(data, indent=2)}") # Optional: Print full parsed JSON
+            return data
+        except json.JSONDecodeError as json_err:
+            print(f"!!! JSON Decode Error: {json_err}")
+            # If response is not JSON, return a wrapped text response
+            return {
+                "status": "error",
+                "message": "Invalid JSON response from server",
+                "raw_content": response.text,
+                "status_code": response.status_code
+            }
+
+    except requests.exceptions.Timeout:
+        print("!!! Error: Request timed out after 45 seconds")
+        raise requests.exceptions.RequestException("Request timed out after 45 seconds")
+    except requests.exceptions.ConnectionError:
+        print("!!! Error: Failed to connect to the webhook")
+        raise requests.exceptions.RequestException("Failed to connect to the webhook")
+    except requests.exceptions.HTTPError as e:
+        print(f"!!! HTTP Error: {e}")
+        raise requests.exceptions.RequestException(f"HTTP error occurred: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"!!! General Request Error: {e}")
+        raise requests.exceptions.RequestException(f"Request failed: {e}")
     
 def research_further(query: str):
     """
