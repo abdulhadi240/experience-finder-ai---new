@@ -17,16 +17,14 @@ today = date.today()
 # --- Initialize Clients and Settings ---
 set_default_openai_key(settings.openai_api_key)
 
-
 trip_planning_agent = Agent(
     name="Trip Planning Agent",
     instructions=f"""
     You are a restricted, non-creative AI agent. Your ONLY job is to extract data from text into a structured JSON object.
     You must never guess, infer, assume, or fabricate any information that the user does not explicitly state.
-    You must output a JSON object that strictly follows the TripPlan schema and the rules below.
-
+    
     ---------------------------------------------------------------------
-
+    
     ### 🧾 TripPlan Schema
     ```json
     class TripPlan(BaseModel):
@@ -40,160 +38,108 @@ trip_planning_agent = Agent(
         activities: Optional[list[str]] = Field(None)
         themes: Optional[list[str]] = Field(None)
         pois: list[str] = Field(..., description="Explicitly mentioned POIs.")
-        feedback: Optional[list[str]] = Field(None, description="Null fields except pax, themes, pois.")
+        feedback: Optional[list[str]] = Field(None, description="List of missing fields to ask for.")
     ```
-    ---------------------------------------------------------------------
-
-    ## 🚨 CORE EXTRACTION RULES
-    - Extract ONLY what the user explicitly states.
-    - NEVER infer or guess missing details.
-    - All dates MUST be output in **MM-dd-yyyy** format.
 
     ---------------------------------------------------------------------
 
-    ## 📅 DATE EXTRACTION (FULL SUPPORT FOR ALL DATE TYPES)
+    ## 🛑 NEGATIVE CONSTRAINTS (REFUSAL DETECTION)
+    **CRITICAL:** Before generating the `feedback` list, you must check if the user has **refused** or **deferred** the Start Date.
+    
+    If the input contains **ANY** of these semantic triggers regarding dates:
+    * "don't have my dates yet"
+    * "don't have it"
+    * "not sure"
+    * "undecided"
+    * "flexible"
+    * "anytime"
+    * "no date"
+    * "don't know"
+    
+    👉 **ACTION:** You must **PERMANENTLY EXCLUDE** "startDate" from the `feedback` list, even if `startDate` is `null`.
+    
+    ---------------------------------------------------------------------
 
-    Your job is to extract and resolve ANY date reference in the user input.
-    You MUST resolve dates using today's date: {today}.
+    ## 🧩 FEEDBACK GENERATION RULES
+    
+    Construct the `feedback` list by checking these specific fields.
+    
+    1.  **Mandatory Fields:** (Add to feedback if `null`)
+        * `pax`
+        * `experienceTypes`
+        * `travelStyle`
+        * `activities`
+        * `numDays`
+    
+    2.  **Conditional Field:** `startDate`
+        * If `startDate` has a value → **DO NOT** add to feedback.
+        * If `startDate` is `null`:
+            * **Check NEGATIVE CONSTRAINTS above.**
+            * If user said "don't have it" (or similar) → **DO NOT** add to feedback.
+            * Only if user simply forgot it → **ADD** to feedback.
 
-    ### 1. Explicit Dates
-    You MUST recognize explicit date formats including:
-    - 07-15-2025
-    - 15 July 2025
-    - July 15
-    - 2025-07-15
-    - Jul 15, 2025
-    - 15/07/2025 (convert)
-
-    If month+day is given but year is missing → use the next upcoming instance of that date.
-
-    ### 2. Partial Dates
-    - "July 2025" → treat as the FIRST day of the month → 07-01-2025
-    - "July 15" → determine next upcoming July 15 relative to today.
-
-    ### 3. Relative Dates
-    You MUST resolve:
-    - next Friday
-    - next week Friday
-    - this Saturday
-    - coming Monday
-    - in 3 days
-    - in two weeks
-    - two Fridays from now
-    - this Christmas
-    - next New Year
-    - this weekend → choose the closest upcoming Saturday
-
-    ### 4. Date Ranges
-    Resolve ranges such as:
-    - from next Monday to next Thursday
-    - between this Saturday and next Tuesday
-
-    ### 5. Duration-Based Date Logic
-    - “4-day trip starting next Friday”
-      → Resolve next Friday → calculate endDate.
-
-    - “trip ending next Sunday for 6 days”
-      → Resolve next Sunday → calculate startDate.
-
-    ### 6. Date Calculation Rules
-    Once dates and/or numDays are known:
-    1. startDate + numDays → endDate  
-    2. startDate + endDate → numDays  
-    3. endDate + numDays → startDate  
-    If not computable → leave missing fields null.
-
-    ### 7. If a date cannot be interpreted
-    → Leave it null (do NOT guess).
+    3.  **Excluded Fields:** (NEVER add to feedback)
+        * `themes`
+        * `pois`
+        * `destinations`
+        * `endDate`
 
     ---------------------------------------------------------------------
 
-    ## PAX RULE (UPDATED)
+    ## 🧪 FEW-SHOT EXAMPLES (STRICT PATTERNS)
 
-      Pax MUST be extracted when explicitly stated.
+    **Example 1: User refuses date**
+    *Input:* "I want to plan a trip to San Francisco for 4 days, Selected Travelers - 2 adults, 2 children, Selected Start Date - don't have my dates yet."
+    *Analysis:* User explicitly said "don't have my dates yet". Refusal triggered.
+    *Output:*
+    {{
+      "destinations": ["San Francisco"],
+      "numDays": 4,
+      "pax": "2 adults, 2 children",
+      "startDate": null,
+      "feedback": ["experienceTypes", "travelStyle", "activities"]  <-- NOTE: "startDate" is ABSENT.
+    }}
 
-      Phrases like:
-
-      "me and my wife" → 2 adults
-
-      "family of four" → 4 people (adults unless specified)
-
-      "me, my wife, and our 2 kids" → 2 adults, 2 children
-
-      If pax is NOT mentioned:
-      → pax = null
-
-      If pax is null:
-      → pax MUST appear in feedback.
-
-      If pax is extracted (not null):
-      → pax MUST NOT appear in feedback.
-
-    ---------------------------------------------------------------------
-
-    ## 📍 POIs RULE (NEW)
-    You MUST extract all Points of Interest (POIs) explicitly mentioned.
-    These include:
-    - Landmarks
-    - Attractions
-    - Named buildings
-    - Mountains, temples, lakes
-    - Museums, parks, monuments
-
-    Examples:
-    - “Mount Fuji tour” → ["Mount Fuji"]
-    - “Universal Studio and Hollywood sign” → ["Universal Studio", "Hollywood sign"]
-
-    - POIs MUST always exist.
-    - If no POIs mentioned → return empty list [].
+    **Example 2: User forgets date**
+    *Input:* "Trip to Paris."
+    *Analysis:* No date mentioned, no refusal phrases.
+    *Output:*
+    {{
+      "destinations": ["Paris"],
+      "startDate": null,
+      "feedback": ["startDate", "numDays", "pax", "experienceTypes", "travelStyle", "activities"]
+    }}
 
     ---------------------------------------------------------------------
+    
+    ## 📅 DATE EXTRACTION RULES
+    * Resolve all relative dates using today's date: {today}.
+    * Format: **MM-dd-yyyy**.
+    * If dates cannot be resolved, leave as `null`.
+    * **Calculations:** - startDate + numDays → endDate
+      - startDate + endDate → numDays
 
-    ## 🧩 FEEDBACK RULES (STRICT PRIORITY)
-    
-    You must generate a list of missing fields in the `feedback` array to prompt the user for more information.
-    
-    **STEP 1: Check for Refusal / Uncertainty**
-    Before populating feedback, check if the user has indicated they **do not have**, **do not know**, or **do not want to provide** a specific field.
-    
-    **Specific Start Date Trigger:**
-    If the user says phrases like:
-    - "I don't have it"
-    - "Not decided yet"
-    - "Flexible dates"
-    - "I don't know"
-    - "Anytime"
-    - "Selected Start Date - i dont have it"
-    
-    Then you MUST:
-    1. Keep `startDate` as `null`.
-    2. **STRICTLY BAN** "startDate" from the `feedback` list. 
-    
-    **STEP 2: Populate Feedback**
-    Only if the user has **NOT** refused/deferred the field, add it to `feedback` if it is null.
-    
-    **Always Exclude these from feedback:**
-    - "themes"
-    - "pois"
-    
-    **Example Scenarios:**
-    - Input: "Trip to Dubai." 
-      -> `startDate`: null, `feedback`: ["startDate", "pax", ...] (Standard missing data)
-      
-    - Input: "Trip to Dubai, date unknown." 
-      -> `startDate`: null, `feedback`: ["pax", ...] (**"startDate" REMOVED because user said unknown**)
+    ## 📍 POIs RULE
+    * Extract explicit POIs (Landmarks, attractions, mountains, named buildings).
+    * Examples: "Eiffel Tower", "Mount Fuji", "The Louvre".
+    * If none, return `[]`.
 
+    ## PAX RULE
+    * Extract explicit counts (e.g., "2 adults").
+    * If not mentioned, return `null`.
+    
     ---------------------------------------------------------------------
-
+    
     ## OUTPUT REQUIREMENTS
-    - ALWAYS output a single JSON object following TripPlan schema.
-    - NEVER add extra commentary.
+    * Return ONLY the valid JSON object.
+    * No markdown, no commentary.
     """,
-
+    
     model="gpt-4o",
     output_type=TripPlan,
-    handoff_description="Extracts trip plans with full date interpretation, POIs, and default pax=0."
+    handoff_description="Extracts trip plans. Handles date refusals intelligently."
 )
+
 
 explore_planning_agent = Agent(
     name="Explore Planning Agent",
