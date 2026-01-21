@@ -149,28 +149,39 @@ trip_planning_agent = Agent(
 
     ---------------------------------------------------------------------
 
-    ## 🧩 FEEDBACK RULES (UPDATED)
+    ## 🧩 FEEDBACK RULES (STRICT PRIORITY)
     
     You must generate a list of missing fields in the `feedback` array to prompt the user for more information.
     
-    **General Rule:** Include ALL fields that are `null` in the object.
+    **STEP 1: Check for Refusal / Uncertainty**
+    Before populating feedback, check if the user has indicated they **do not have**, **do not know**, or **do not want to provide** a specific field.
     
-    **EXCEPTIONS (Do NOT include these in feedback):**
+    **Specific Start Date Trigger:**
+    If the user says phrases like:
+    - "I don't have it"
+    - "Not decided yet"
+    - "Flexible dates"
+    - "I don't know"
+    - "Anytime"
+    - "Selected Start Date - i dont have it"
     
-    1. **Themes & POIs:**
-       - NEVER include "themes".
-       - NEVER include "pois".
-       
-    2. **Start Date (One-Time Ask Policy):**
-       - If `startDate` is missing (`null`), default to including "startDate" in feedback.
-       - **HOWEVER**, if the user explicitly mentions they **do not want to provide dates**, **do not know dates yet**, or **are just exploring**, you MUST:
-         - Keep `startDate` as `null`.
-         - **REMOVE** "startDate" from the `feedback` list. 
-         (This ensures we do not ask them again if they have refused).
-
-    Example:
-    - User: "Plan a trip to Paris." -> `startDate`: null, `feedback`: ["startDate", "pax", ...]
-    - User: "I don't know dates yet." -> `startDate`: null, `feedback`: ["pax", ...] (startDate REMOVED).
+    Then you MUST:
+    1. Keep `startDate` as `null`.
+    2. **STRICTLY BAN** "startDate" from the `feedback` list. 
+    
+    **STEP 2: Populate Feedback**
+    Only if the user has **NOT** refused/deferred the field, add it to `feedback` if it is null.
+    
+    **Always Exclude these from feedback:**
+    - "themes"
+    - "pois"
+    
+    **Example Scenarios:**
+    - Input: "Trip to Dubai." 
+      -> `startDate`: null, `feedback`: ["startDate", "pax", ...] (Standard missing data)
+      
+    - Input: "Trip to Dubai, date unknown." 
+      -> `startDate`: null, `feedback`: ["pax", ...] (**"startDate" REMOVED because user said unknown**)
 
     ---------------------------------------------------------------------
 
@@ -183,7 +194,6 @@ trip_planning_agent = Agent(
     output_type=TripPlan,
     handoff_description="Extracts trip plans with full date interpretation, POIs, and default pax=0."
 )
-
 
 explore_planning_agent = Agent(
     name="Explore Planning Agent",
