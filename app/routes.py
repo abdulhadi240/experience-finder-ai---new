@@ -17,9 +17,7 @@ router = APIRouter()
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
     """
-    This endpoint intelligently routes requests based on content validation.
-    - If param is 'explore', it uses specific logic for explore agent.
-    - Otherwise, it uses the standard validation logic.
+    This endpoint routes requests based on content validation.
     """
     try:
         # Step 1: User and Thread setup
@@ -62,67 +60,29 @@ async def unified_chat(request: QueryRequest):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
 
-        # --- EXPLORE SYSTEM ---
-        if request.param == "explore":
-            # 1. Run Explore Agent
-            explore_travel_agent_result = await Runner.run(explore_travel_agent, final_message_with_current)
-            output = explore_travel_agent_result.final_output
+        # Run Validation Agent
+        validation_result = await Runner.run(validation_agent, final_message_with_current)
 
-            # 2. Check Validity
-            if not output.isValid:
-                return get_error_stream_response(output.reason, output.solution)
-
-            # 3. PRIORITY CHECK: isPlanRelated
-            if getattr(output, 'isPlanRelated', False):
-                # If True, simply get complete response (standard) and return. Nothing else.
-                response_content = await get_complete_response(request.message, thread_id, param)
-                return JSONResponse(content={
-                    "response": jsonable_encoder(response_content),
-                    "type": "non-streaming"
-                })
-            
-            # 4. ELSE: Check travel_type logic
-            # If we are here, isPlanRelated was False. Now check specific-search-query.
-            elif (output.isTravelRelated and getattr(output, 'travel_type', '') == "specific-search-query"):
-                response_content = await get_complete_response_explore(request.message, thread_id, param)
-                return JSONResponse(content={
-                    "response": jsonable_encoder(response_content),
-                    "type": "non-streaming"
-                })
-            
-            # 5. Default Fallback -> Stream
-            else:
-                return StreamingResponse(
-                    generate_stream(request.message, thread_id, request.reference),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-                )
-
-        # --- DEFAULT VALIDATION SYSTEM ---
+        # Check Validity
+        if not validation_result.final_output.isValid:
+            return get_error_stream_response(
+                validation_result.final_output.reason, 
+                validation_result.final_output.solution
+            )
+        
+        # Check Travel logic
+        if validation_result.final_output.isTravelRelated:
+            response_content = await get_complete_response(request.message, thread_id, param)
+            return JSONResponse(content={
+                "response": jsonable_encoder(response_content),
+                "type": "non-streaming"
+            })
         else:
-            # 1. Run Validation Agent
-            validation_result = await Runner.run(validation_agent, final_message_with_current)
-
-            # 2. Check Validity
-            if not validation_result.final_output.isValid:
-                return get_error_stream_response(
-                    validation_result.final_output.reason, 
-                    validation_result.final_output.solution
-                )
-            
-            # 3. Check Travel logic (Standard)
-            if validation_result.final_output.isTravelRelated:
-                response_content = await get_complete_response(request.message, thread_id, param)
-                return JSONResponse(content={
-                    "response": jsonable_encoder(response_content),
-                    "type": "non-streaming"
-                })
-            else:
-                return StreamingResponse(
-                    generate_stream(request.message, thread_id, request.reference),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-                )
+            return StreamingResponse(
+                generate_stream(request.message, thread_id, request.reference),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

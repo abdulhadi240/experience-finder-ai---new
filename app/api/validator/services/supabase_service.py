@@ -37,7 +37,7 @@ class SupabaseService:
             "longitude": float(attraction_data.get("longitude")) if attraction_data.get("longitude") else None,
             "language": attraction_data.get("language", "en"),
             "tags": attraction_data.get("tags"),
-            "source": attraction_data.get("source"),
+            "source": "web search",
             "meta_obj": attraction_data.get("meta_obj"),
         }
         insert_data = {k: v for k, v in insert_data.items() if v is not None}

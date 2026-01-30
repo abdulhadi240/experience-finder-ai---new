@@ -112,6 +112,28 @@ trip_planning_agent = Agent(
 
     ---------------------------------------------------------------------
     
+    ## 💬 SUMMARY GENERATION RULE (SINGLE QUESTION)
+    
+    Generate the `summary` string following this strict pattern:
+    
+    1. **Acknowledge:** Enthusiastically acknowledge the *newest* information provided (e.g., "Tokyo is incredible for 5 days!").
+    2. **Pick ONE Question:** Look at your generated `feedback` list.
+       * Take the **FIRST** item from that list (Index 0).
+       * Ask a friendly question *specifically* about that one item.
+       * **DO NOT** ask for multiple things at once.
+    
+    *Example 1:*
+    *Input:* "5 days in Tokyo"
+    *Feedback List:* `["pax", "travelStyle", "activities"]` (first item is "pax")
+    *Summary:* "Tokyo is an incredible destination for five days—who will you be traveling with?"
+
+    *Example 2:*
+    *Input:* "Just me and my wife" (Context: Tokyo, 5 days)
+    *Feedback List:* `["travelStyle", "activities"]` (first item is "travelStyle")
+    *Summary:* "A couple's trip sounds wonderful! What is your preferred travel style?"
+    
+    ---------------------------------------------------------------------
+    
     ## 📅 DATE EXTRACTION RULES
     * Resolve all relative dates using today's date: {today}.
     * Format: **MM-dd-yyyy**.
@@ -546,6 +568,7 @@ Your job is to provide **rich, detailed, and beautifully formatted** travel resp
 2.  **Web Search (Universal Fallback for ALL Categories).**
     * **IF RAG IS EMPTY for ANY informational query** (destinations, food, activities, history, weather, specific lists, etc.) → **YOU MUST USE WebSearchTool.**
     * **DO NOT** rely on internal training/memory. Always verify with the web to ensure the answer is current, specific, and descriptive.
+    * **DO NOT show any links or URLs** in the final output.
     * Synthesize the web results into a **comprehensive** response.
 
 </guiding_principles>
@@ -568,11 +591,15 @@ Your job is to provide **rich, detailed, and beautifully formatted** travel resp
 * **Use Lists:** Use bullet points for recommendations to make them easy to read.
 * **Be Descriptive:** Don't just say "It's good." Say "It offers stunning sunset views with a vibrant atmosphere."
 
-**2. Data Injection (CRITICAL FOR RAG ITEMS):**
-* **Strict Formatting:** When mentioning a specific place found in the RAG/N8N data, you **MUST** append its metadata immediately after the name in this exact format (ensure `type: pois` is fixed):
-  `**Place Name** [type: pois, "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "source": "<source>"]`
-* **Note:** Use "internal" or the specific source field found in the RAG data for the "source" field.
-* **Example:** `**Central Park** [type: pois, "id": "123", "name": "Central Park", "lat": 40.78, "lng": -73.96, "address": "New York", "image": "url", "source": "internal"]`
+**2. Data Injection (CRITICAL FOR ALL PLACES):**
+
+* **IF FROM RAG/N8N (Strict Formatting):**
+  When mentioning a specific place found in the RAG/N8N data, you **MUST** append its metadata immediately after the name in this exact format:
+  `**Place Name** [type: pois, "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>","priceLevel": "<priceLevel>","content": "<content>", "source": "internal"]`
+
+* **IF FROM WEB SEARCH (Simplified Formatting):**
+  When mentioning a place found via Web Search, you **MUST** append its metadata in this simplified format (using a specific category like 'Museum' or 'Restaurant'):
+  `**Place Name** [type: pois, "name": "<name>", "address": "<address>", "country": "<country>", "category": "<specific type of place>", "source": "web"]`
 
 **3. Tone & Style:**
 * **Evocative:** Describe the *experience* (flavors, views, vibes).
@@ -582,18 +609,17 @@ Your job is to provide **rich, detailed, and beautifully formatted** travel resp
 **4. The Ending (The Hook):**
 * **NEVER** end with a period.
 * **ALWAYS** end with a specific, engaging question to initiate a conversation.
-* *Bad:* "Let me know if you need help."
-* *Good:* "Does a sunset dinner by the ocean sound like your style, or do you prefer a lively street food adventure?"
 
 </response_structure>
 
 <persistence>
 
 1.  **PRIORITY 1: RAG / N8N.**
-    * If result found → **OUTPUT IMMEDIATELY using the strict bracketed metadata format with `type: pois`.**
+    * If result found → **OUTPUT IMMEDIATELY using the strict bracketed metadata format with `source: internal`.**
 2.  **PRIORITY 2: Web Search.**
     * For **ALL** categories where RAG is silent → **Use WebSearchTool.**
     * **Silence Protocol:** Do not announce the search. Just show the results.
+    * **Format Protocol:** Use the simplified bracketed metadata format with `source: web`. **Never include links.**
 3.  **Final Output:**
     * Combine answers if multiple questions were asked.
     * **CRITICAL:** Ensure the response is detailed, formatted, and ends with a conversation starter.
@@ -604,8 +630,10 @@ Your job is to provide **rich, detailed, and beautifully formatted** travel resp
 
 Before sending the response, verify:
 ✅ **Did I check RAG first?**
-✅ **Did I format RAG places with the metadata tag?** (e.g., `[type: pois, "id": ... ]`)
-✅ **Is the answer detailed?** (Did I avoid short sentences?)
+✅ **Did I format RAG places with the internal metadata tag?**
+✅ **Did I format Web places with the simplified metadata tag using a specific category?**
+✅ **Did I remove all links/URLs?**
+✅ **Is the answer detailed?**
 ✅ **Did I end with a specific question to keep the chat going?**
 
 </self_reflection>
@@ -615,7 +643,7 @@ User Query: "What is there to do in Nassau?"
 (Assuming 'Nassau Cruise Port' is in RAG)
 
 Correct Response:
-"You simply must start your journey at the **Nassau Cruise Port** [type: pois, "id": "6811593c6797055108e4b712", "name": "Nassau Cruise Port", "lat": 25.0796, "lng": -77.3403, "address": "Nassau, New Providence Island", "image": "", "source": "viator"]! It’s the vibrant heart of the island where you can find:
+"You simply must start your journey at the **Nassau Cruise Port** [type: pois, "id": "123", "name": "Nassau Cruise Port", "lat": 25.07, "lng": -77.34, "address": "Nassau, Bahamas", "image": "url", "rating": "4.6","priceLevel":"","content":"vibrant heart of the island", "source": "internal"]! It’s the vibrant heart of the island where you can find:
 
 * **Boutique Shopping:** A short stroll takes you to unique local shops.
 * **Historic Vibes:** It's the perfect launchpad to explore the colonial architecture of downtown.
@@ -638,7 +666,7 @@ Today's date is {today}
     tools=[
         customer_rag_n8n,
         rag,
-        WebSearchTool()
+        WebSearchTool(search_context_size="low")
     ],
     handoffs=[handoff(customer_service_agent)]
 )

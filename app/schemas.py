@@ -62,6 +62,7 @@ class TripPlan(BaseModel):
     themes: Optional[list[str]] = Field(None, description="list of themes from media or pop culture (e.g., 'James Bond', 'Midnight in Paris').") 
     pois: list[str] = Field(..., description="Explicitly mentioned Points of Interest.")  
     feedback: Optional[list[str]] = Field(None,description="Array of missing field names that require user input.")
+    summary: str = Field(None, description="A friendly, conversational acknowledgement of the current input followed by a question asking for the items in the 'feedback' list.")
     
     
     
