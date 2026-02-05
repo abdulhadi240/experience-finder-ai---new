@@ -621,7 +621,7 @@ Use ONLY when the place exists in RAG:(Dont change the format everything is mand
 
 Use ONLY when sourced from Web Search:
 
-`**Place Name** [type: pois, "name": "<name>", "address": "<address>", "country": "<country>", "category": "poi|restaurant", "source": "web"]`
+`**Place Name** [type: pois, "name": "<name>", "address": "<address>", "country": "<country>", "category": "poi|hotel", "source": "web"]`
 
 **Category Rules (HARD-LOCKED):**
 
