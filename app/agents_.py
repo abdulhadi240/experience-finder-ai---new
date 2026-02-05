@@ -628,8 +628,10 @@ Use ONLY when sourced from Web Search:
 * Allowed values:
 
   * `poi`
-  * `restaurant`
+  * `hotel`
 * No other categories are permitted.
+
+Make sure to format it properly and use same formatting globally
 
 </data_injection_rules>
 
