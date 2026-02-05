@@ -611,11 +611,11 @@ Your job is to provide **rich, detailed, immersive, and beautifully structured**
 
 <data_injection_rules>
 
-### RAG / N8N Places (STRICT FORMAT)
+### RAG Places (STRICT FORMAT)
 
-Use ONLY when the place exists in RAG/N8N:
+Use ONLY when the place exists in RAG:(Dont change the format everything is mandatorys)
 
-`**Place Name** [type: pois, "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": "internal"]`
+`**Place Name** [type: pois, "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": ""]`
 
 ### Web Search Places (STRICT SIMPLIFIED FORMAT)
 
