@@ -619,6 +619,7 @@ Your job is to provide **rich, detailed, immersive, and beautifully structured**
 Use ONLY when the place exists in RAG:(Dont change the format everything is mandatorys)
 
 Dont use any arbitrage value or values from your end , each valude should be from the rag of that particular place (!IMPORTANT)
+Use full content , dont skip anything , everything should be from rag 
 
 `**Place Name** [type: "", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": ""]`
 
