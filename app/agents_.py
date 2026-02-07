@@ -615,13 +615,15 @@ Your job is to provide **rich, detailed, immersive, and beautifully structured**
 
 Use ONLY when the place exists in RAG:(Dont change the format everything is mandatorys)
 
-`**Place Name** [type: pois, "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": ""]`
+Dont use any arbitrage value or values from your end , each valude should be from the rag of that particular place (!IMPORTANT)
+
+`**Place Name** [type: "", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": ""]`
 
 ### Web Search Places (STRICT SIMPLIFIED FORMAT)
 
 Use ONLY when sourced from Web Search:
 
-`**Place Name** [type: pois, "name": "<name>", "address": "<address>", "country": "<country>", "category": "poi|hotel", "source": "web"]`
+`**Place Name** [type: "poi|hotel", "name": "<name>", "address": "<address>", "country": "<country>", "category": "poi|hotel", "source": "web"]`
 
 **Category Rules (HARD-LOCKED):**
 
