@@ -1,5 +1,5 @@
 # app/schemas.py
-from pydantic import BaseModel , Field ,list
+from pydantic import BaseModel , Field
 from typing import Optional
 
 class QueryRequest(BaseModel):
