@@ -1,0 +1,96 @@
+name: Deploy Agentic API (Keyless OIDC CI/CD)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 087307346846.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: agentic-api
+  TF_BUCKET: agentic-terraform-state-ai
+  TF_DYNAMO_TABLE: agentic-terraform-locks
+  ECS_CLUSTER: agentic-api-cluster
+  ECS_SERVICE: agentic-api-svc
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Build, Push, and Deploy Agentic API
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::087307346846:role/GitHubActions-Agentic-Deployer
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build-image
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::7}
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+          echo "Building and pushing image: $IMAGE_URI"
+
+          docker buildx create --use
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --attest type=provenance,disabled=true \
+            -t $IMAGE_URI \
+            --push .
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.4
+
+      - name: Initialize Terraform
+        working-directory: infra
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.TF_BUCKET }}" \
+            -backend-config="key=ecs/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ env.TF_DYNAMO_TABLE }}" \
+            -reconfigure
+
+      - name: Apply Terraform (update ECS task definition with new image)
+        working-directory: infra
+        run: |
+          echo "Using image: $IMAGE_URI"
+          terraform apply -auto-approve \
+            -var="container_image=${IMAGE_URI}"
+
+      - name: Force ECS New Deployment
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Verify ECS Deployment
+        run: |
+          aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query "services[0].deployments" \
+            --output table

@@ -1,0 +1,26 @@
+# FastAPI and core web framework
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+
+# AI and data processing
+openai         # keeps opik compatible
+tavily-python
+openai-agents[viz]
+zep-cloud>=3.10.0
+
+# Environment and APIs
+python-dotenv
+requests
+googlemaps
+httpx
+supabase
+
+# Other framework compatibility fixes
+chainlit
+google-genai
+opik
+streamlit
+websockets   # compatible with google-genai
+packaging    # compatible with streamlit

@@ -1,0 +1,10 @@
+aws_region       = "us-east-1"
+project_name     = "agentic-api"
+container_image  = "087307346846.dkr.ecr.us-east-1.amazonaws.com/agentic-api:amd64"
+desired_count    = 2
+min_capacity     = 2
+max_capacity     = 6
+cpu_target       = 60
+memory           = 1024
+cpu              = 512
+acm_certificate_arn = "arn:aws:acm:us-east-1:087307346846:certificate/a1789a77-b3e2-4eb7-a890-c827f51eea9d"
