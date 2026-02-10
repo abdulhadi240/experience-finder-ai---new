@@ -9,7 +9,7 @@ class QueryRequest(BaseModel):
     reference: str
     param: str
     threadId: Optional[str]
-    old_questions: list[str]
+    old_questions: Optional[list[str]] = None
     
     
 class Output_Format(BaseModel):
