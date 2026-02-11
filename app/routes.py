@@ -27,11 +27,13 @@ async def unified_chat(request: QueryRequest):
         param = request.param 
                 
         if request.old_interactions:
-            old_questions_text = "\n".join(request.old_interactions)
-            final_message_with_current = f"Previous interactions:\n{old_questions_text}\n\nCurrent question:\n{request.message}"
-            print(final_message_with_current)
+            old_interactions_text = "\n".join(
+            f"User: {i.question}\nAssistant: {i.answer}" 
+            for i in request.old_interactions
+            )
+            final_message_with_current = f"Previous interactions:\n{old_interactions_text}\n\nCurrent question:\n{request.message}"
         else:
-            final_message_with_current = f"Previous interactions:\n\n\nCurrent question:\n{request.message}"
+            final_message_with_current = request.message
 
 
         # Helper function to generate the error stream

@@ -2,6 +2,12 @@
 from pydantic import BaseModel , Field
 from typing import Optional
 
+
+class Interaction(BaseModel):
+    question: str
+    answer: str
+    
+    
 class QueryRequest(BaseModel):
     """Model for incoming chat requests."""
     message: str
@@ -9,7 +15,7 @@ class QueryRequest(BaseModel):
     reference: str
     param: str
     threadId: Optional[str]
-    old_interactions: Optional[list[str]] = None
+    old_interactions: Optional[list[Interaction]] = None
     
     
 class Output_Format(BaseModel):
