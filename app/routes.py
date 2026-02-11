@@ -30,6 +30,9 @@ async def unified_chat(request: QueryRequest):
             old_questions_text = "\n".join(request.old_interactions)
             final_message_with_current = f"Previous interactions:\n{old_questions_text}\n\nCurrent question:\n{request.message}"
             print(final_message_with_current)
+        else:
+            final_message_with_current = f"Previous interactions:\n\n\nCurrent question:\n{request.message}"
+
 
         # Helper function to generate the error stream
         def get_error_stream_response(reason, solution):
