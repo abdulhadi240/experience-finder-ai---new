@@ -25,11 +25,11 @@ async def unified_chat(request: QueryRequest):
         thread_id = check_user(request.user_id)
         
         param = request.param 
-        final_message_with_current = request.message
-        
-        if request.old_questions:
-            old_questions_text = "\n".join(request.old_questions)
-            final_message_with_current = f"Previous questions:\n{old_questions_text}\n\nCurrent question:\n{request.message}"
+                
+        if request.old_interactions:
+            old_questions_text = "\n".join(request.old_interactions)
+            final_message_with_current = f"Previous interactions:\n{old_questions_text}\n\nCurrent question:\n{request.message}"
+            print(final_message_with_current)
 
         # Helper function to generate the error stream
         def get_error_stream_response(reason, solution):
@@ -64,7 +64,9 @@ async def unified_chat(request: QueryRequest):
             )
 
         # Run Validation Agent
+        print("validation")
         validation_result = await Runner.run(validation_agent, final_message_with_current)
+        print("validation_result:", validation_result.final_output)
 
         # Check Validity
         if not validation_result.final_output.isValid:
@@ -75,15 +77,16 @@ async def unified_chat(request: QueryRequest):
         
         # Check Travel logic
         if validation_result.final_output.isTravelRelated:
-            response_content = await get_complete_response(request.message, thread_id, param)
+            response_content = await get_complete_response(final_message_with_current, thread_id, param)
             return JSONResponse(content={
                 "response": jsonable_encoder(response_content),
                 "type": "non-streaming"
             })
         else:
             agent = 'general_agent' if request.param == 'plan' else 'explore_agent'
+            print("Stream")
             return StreamingResponse(
-                generate_stream(request.message, thread_id, request.reference, agent),
+                generate_stream(request.message, thread_id, request.reference, agent ,final_message_with_current),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )

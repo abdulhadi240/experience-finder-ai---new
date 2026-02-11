@@ -9,7 +9,7 @@ from .agents_ import general_agent , trip_planning_agent , explore_planning_agen
 from .memory import check_user, add_message, get_message
 from .tools import research_further
 
-async def generate_stream(message: str, thread_id: str , reference: str , agent: str) -> AsyncGenerator[str, None]:
+async def generate_stream(message: str, thread_id: str , reference: str , agent: str , final_message: str) -> AsyncGenerator[str, None]:
     """Generates a streaming response in Server-Sent Events (SSE) format."""
     start_time = time.time()
     first_chunk_time = None
@@ -18,11 +18,12 @@ async def generate_stream(message: str, thread_id: str , reference: str , agent:
     try:
         
         add_message(role='user', thread_id=thread_id, message=message)
-        final_message = get_message(thread_id=thread_id)
-        research_further(final_message)
-        
+        print("Stream Start")
         # Append the latest message to final_message before sending to agent
-        final_message_with_current = final_message + "\n\n Question : " + message + "\n\n Reference : " + reference
+        final_message_with_current = final_message + "\n\n Reference : " + reference
+        print("Stream Start " + final_message_with_current)
+
+        research_further(final_message_with_current)
         
         if agent == 'general_agent':
             result = Runner.run_streamed(general_agent, final_message_with_current)
