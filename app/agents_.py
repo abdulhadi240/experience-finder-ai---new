@@ -699,7 +699,14 @@ Begin with a natural, direct acknowledgment (1–2 sentences max).
 
 ** Places Metadata Block (THE ABSOLUTE FINAL ELEMENT)**
 - This block contains structured metadata for every place mentioned.
-- **NOTHING comes after this block**. The last character of your output must be `]`.
+- **NOTHING comes after this block**.
+- The block MUST be wrapped with the exact delimiter $$$$$ on its own line:
+
+$$$$$
+(all place metadata lines go here, one per line)
+$$$$$
+
+- Your output MUST end with the closing $$$$$.
 
 </response_structure>
 
@@ -815,7 +822,14 @@ Begin with a natural, direct acknowledgment (1–2 sentences max). No "Great que
 
 ** Places Metadata Block (THE ABSOLUTE FINAL ELEMENT)**
 - This block contains structured metadata for every place mentioned.
-- **NOTHING comes after this block**. The last character of your output must be `]`.
+- **NOTHING comes after this block**.
+- The block MUST be wrapped with the exact delimiter $$$$$ on its own line:
+
+$$$$$
+(all place metadata lines go here, one per line)
+$$$$$
+
+- Your output MUST end with the closing $$$$$.
 
 </response_structure>
 
