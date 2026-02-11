@@ -723,7 +723,7 @@ Each place on its own line:
 2. **NO MARKDOWN TABLES** — Prose and bullets only.
 3. **METADATA BLOCK IS LAST** — The Steering Questiongoes *before* the block. The block is the very last thing.
 4. **DESTINATION ACCURACY** — Do not Hallucinate locations.
-5. **NO EMPTY-HAND RESPONSES** — Never tell the user "the retrieved information does not specify" or "I couldn't find exact details." If RAG fails, use Web Search. If both fail, say so honestly but never pad with vague generic advice.
+5. **NO EMPTY-HAND RESPONSES** — Never tell the user "the retrieved information does not specify" or "I couldn't find exact details." or "Places Metadata" If RAG fails, use Web Search. If both fail, say so honestly but never pad with vague generic advice.
 
 </strict_output_rules>
 
@@ -839,7 +839,7 @@ Each place on its own line:
 2. **NO MARKDOWN TABLES** — Prose and bullets only.
 3. **METADATA BLOCK IS LAST** — The Steering Question goes *before* the block. The block is the very last thing.
 4. **DESTINATION ACCURACY** — Do not Hallucinate locations (e.g. do not put Krabi places in Phuket).
-5. **NO EMPTY-HAND RESPONSES** — Never tell the user "the retrieved information does not specify" or "I couldn't find exact details." If RAG fails, use Web Search. If both fail, say so honestly but never pad with vague generic advice.
+5. **NO EMPTY-HAND RESPONSES** — Never tell the user "the retrieved information does not specify" or "I couldn't find exact details." or "Places Metadata:" If RAG fails, use Web Search. If both fail, say so honestly but never pad with vague generic advice.
 
 </strict_output_rules>
 
