@@ -21,83 +21,122 @@ async def unified_chat(request: QueryRequest):
     """
     try:
         # Step 1: User and Thread setup
-        thread_id = None
         thread_id = check_user(request.user_id)
-        
-        param = request.param 
-                
-        if request.old_interactions:
-            old_interactions_text = "\n".join(
-            f"User: {i.question}\nAssistant: {i.answer}" 
-            for i in request.old_interactions
-            )
-            final_message_with_current = f"Previous interactions:\n{old_interactions_text}\n\nCurrent question:\n{request.message}"
-        else:
-            final_message_with_current = request.message
+        param = request.param
 
+        # Step 2: Build conversation context
+        final_message_with_current = build_conversation_context(request)
+        print(final_message_with_current)
 
-        # Helper function to generate the error stream
-        def get_error_stream_response(reason, solution):
-            async def error_stream_generator() -> AsyncGenerator[str, None]:
-                start_time = time.time()
-                yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
-
-                # Set TTFB
-                first_chunk_time = time.time()
-                ttfb = first_chunk_time - start_time
-                yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
-
-                chunks = [
-                '{"', "answer", '":"',
-                "Let", "'s", " keep", " it", " travel", "-focused", " ✨", ".\n\n",
-                "I", " can", " help", " you", " explore", " destinations", ",",
-                " discover", " experiences", ",", " and", " plan", " your", " trip", ".\n\n",
-                "What", " would", " you", " like", " to", " explore", " next", "?",
-                '"}', ""
-            ]
-
-                for chunk in chunks:
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
-
-                end_time = time.time()
-                yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'blocked': True})}\n\n"
-
-            return StreamingResponse(
-                error_stream_generator(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-            )
-
-        # Run Validation Agent
+        # Step 3: Run Validation Agent
         print("validation")
         validation_result = await Runner.run(validation_agent, final_message_with_current)
         print("validation_result:", validation_result.final_output)
 
-        # Check Validity
+        # Step 4: Check Validity
         if not validation_result.final_output.isValid:
             return get_error_stream_response(
-                validation_result.final_output.reason, 
+                validation_result.final_output.reason,
                 validation_result.final_output.solution
             )
-        
-        # Check Travel logic
+
+        # Step 5: Route based on travel relevance
         if validation_result.final_output.isTravelRelated:
-            response_content = await get_complete_response(final_message_with_current, thread_id, param)
+            response_content = await get_complete_response(
+                final_message_with_current, thread_id, param
+            )
             return JSONResponse(content={
                 "response": jsonable_encoder(response_content),
                 "type": "non-streaming"
             })
         else:
-            agent = 'general_agent' if request.param == 'plan' else 'explore_agent'
+            agent = 'general_agent' if param == 'plan' else 'explore_agent'
             print("Stream")
             return StreamingResponse(
-                generate_stream(request.message, thread_id, request.reference, agent ,final_message_with_current),
+                generate_stream(
+                    request.message, thread_id, request.reference,
+                    agent, final_message_with_current
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
-            
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def clean_answer(answer: str) -> str:
+    """Remove POI metadata block (between $$$$$) from answer."""
+    return answer.split('$$$$$')[0].strip()
+
+
+def build_conversation_context(request: QueryRequest) -> str:
+    """Build the final message with conversation history (max 2)."""
+    if not request.old_interactions:
+        return request.message
+
+    # Array is already latest → oldest from frontend
+    recent = request.old_interactions[:2]
+
+    if len(recent) >= 2:
+        last = recent[0]  # First item = most recent = continuation
+        previous = recent[1]  # Second item = previous
+
+        last_conversation = (
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        )
+        previous_conversation = (
+            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
+        )
+        return (
+            f"Previous conversation:\n{previous_conversation}\n\n"
+            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
+            f"User asked: {request.message}"
+        )
+
+    elif len(recent) == 1:
+        last = recent[0]
+        last_conversation = (
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        )
+        return (
+            f"Last conversation (this is the continuation of the conversation):\n{last_conversation}\n\n"
+            f"New question asked: {request.message}"
+        )
+
+    return request.message
+
+
+def get_error_stream_response(reason: str, solution: str):
+    """Generate a streaming error response for invalid/non-travel queries."""
+    async def error_stream_generator() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+
+        first_chunk_time = time.time()
+        ttfb = first_chunk_time - start_time
+        yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
+
+        chunks = [
+            '{"', "answer", '":"',
+            "Let", "'s", " keep", " it", " travel", "-focused", " ✨", ".\n\n",
+            "I", " can", " help", " you", " explore", " destinations", ",",
+            " discover", " experiences", ",", " and", " plan", " your", " trip", ".\n\n",
+            "What", " would", " you", " like", " to", " explore", " next", "?",
+            '"}', ""
+        ]
+
+        for chunk in chunks:
+            yield f"data: {json.dumps({'content': chunk})}\n\n"
+
+        end_time = time.time()
+        yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'blocked': True})}\n\n"
+
+    return StreamingResponse(
+        error_stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
 
 
 @router.get("/delete_user")
