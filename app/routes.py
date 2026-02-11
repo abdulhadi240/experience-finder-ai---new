@@ -81,8 +81,9 @@ async def unified_chat(request: QueryRequest):
                 "type": "non-streaming"
             })
         else:
+            agent = 'general_agent' if request.param == 'plan' else 'explore_agent'
             return StreamingResponse(
-                generate_stream(request.message, thread_id, request.reference),
+                generate_stream(request.message, thread_id, request.reference, agent),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )

@@ -5,11 +5,11 @@ import asyncio
 from typing import AsyncGenerator
 from agents import Runner
 from openai.types.responses import ResponseTextDeltaEvent
-from .agents_ import general_agent , trip_planning_agent , explore_planning_agent # Import the configured agents
+from .agents_ import general_agent , trip_planning_agent , explore_planning_agent , explore_agent # Import the configured agents
 from .memory import check_user, add_message, get_message
 from .tools import research_further
 
-async def generate_stream(message: str, thread_id: str , reference: str) -> AsyncGenerator[str, None]:
+async def generate_stream(message: str, thread_id: str , reference: str , agent: str) -> AsyncGenerator[str, None]:
     """Generates a streaming response in Server-Sent Events (SSE) format."""
     start_time = time.time()
     first_chunk_time = None
@@ -24,8 +24,11 @@ async def generate_stream(message: str, thread_id: str , reference: str) -> Asyn
         # Append the latest message to final_message before sending to agent
         final_message_with_current = final_message + "\n\n Question : " + message + "\n\n Reference : " + reference
         
-        result = Runner.run_streamed(general_agent, final_message_with_current)
-        
+        if agent == 'general_agent':
+            result = Runner.run_streamed(general_agent, final_message_with_current)
+        else:
+            result = Runner.run_streamed(explore_agent, final_message_with_current)
+
         yield f"data: {json.dumps({'start_time': start_time, 'status': 'started' , 'threadId': thread_id})}\n\n"
         
         async for event in result.stream_events():
