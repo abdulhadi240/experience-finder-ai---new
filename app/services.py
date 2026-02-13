@@ -63,7 +63,6 @@ async def get_complete_response(message: str, thread_id: str , mode: str) -> tup
     start_time = time.time()
     
     try:        
-        # Append the latest message to final_message before sending to agent    
         result = await Runner.run(trip_planning_agent, message) 
         
         # Access the actual response data

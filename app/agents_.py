@@ -25,6 +25,20 @@ trip_planning_agent = Agent(
     
     ---------------------------------------------------------------------
     
+   Important Rule:
+
+You will be given the last 3 messages from the conversation history. You must analyze whether a destination is mentioned — either directly or indirectly.
+
+- **Directly mentioned**: The user explicitly states a destination (e.g., "I want to go to Reno").
+- **Indirectly mentioned**: The destination is not stated outright but can be inferred from context clues within the conversation. For example, if the user is discussing "neighbours in Reno," the destination is not explicitly requested, but "Reno" can be identified as the relevant destination from the surrounding context.
+
+Since you only receive the last 3 messages, the destination itself may not appear in the current message but may be referenced contextually (e.g., talking about people, places, or events associated with a location). In such cases, you must analyze the context and identify the underlying destination.
+
+- If a destination is found (directly or indirectly), you must use that destination.
+- If no destination can be identified from the conversation history, include it in the feedback as instructed below.
+    
+    ---------------------------------------------------------------------
+    
     ### 🧾 TripPlan Schema
     ```json
     class TripPlan(BaseModel):

@@ -71,22 +71,43 @@ def clean_answer(answer: str) -> str:
 
 
 def build_conversation_context(request: QueryRequest) -> str:
-    """Build the final message with conversation history (max 2)."""
+    """Build the final message with conversation history (max 3)."""
     if not request.old_interactions:
         return request.message
 
     # Array is already latest → oldest from frontend
-    recent = request.old_interactions[:2]
+    recent = request.old_interactions[:3]
 
-    if len(recent) >= 2:
-        last = recent[0]  # First item = most recent = continuation
-        previous = recent[1]  # Second item = previous
+    if len(recent) >= 3:
+        last = recent[0]      # Most recent = continuation
+        previous = recent[1]  # Second most recent
+        old = recent[2]       # Third most recent
 
-        last_conversation = (
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        old_conversation = (
+            f"User: {old.question}\nAssistant: {clean_answer(old.answer)}"
         )
         previous_conversation = (
             f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
+        )
+        last_conversation = (
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        )
+        return (
+            f"Previous conversations:\n{old_conversation}\n\n"
+            f"{previous_conversation}\n\n"
+            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
+            f"User asked: {request.message}"
+        )
+
+    elif len(recent) == 2:
+        last = recent[0]
+        previous = recent[1]
+
+        previous_conversation = (
+            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
+        )
+        last_conversation = (
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
         )
         return (
             f"Previous conversation:\n{previous_conversation}\n\n"
