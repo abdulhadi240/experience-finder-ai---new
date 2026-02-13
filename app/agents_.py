@@ -92,24 +92,24 @@ trip_planning_agent = Agent(
     📊 numDays EXTRACTION RULES
     =====================================================================
 
-    Extract the number of trip days using these rules in priority order:
+    Extract the number of trip days ONLY from **explicit numeric values**. Never guess or infer duration from casual/vague language.
 
     1. **Exact number**: "5 days" → `numDays: 5`
-    2. **Range given**: If the user provides a range (e.g., "11-15 days", "10 to 14 days", "between 3 and 5 days"), use the **lower bound** of the range.
+    2. **Range given**: If the user provides a numeric range (e.g., "11-15 days", "10 to 14 days", "between 3 and 5 days"), use the **lower bound** of the range.
        - "11-15 days" → `numDays: 11`
        - "5-7 days" → `numDays: 5`
        - "between 10 and 14 days" → `numDays: 10`
-    3. **Vague durations**: Interpret common vague expressions:
-       - "a couple of days" → `numDays: 2`
-       - "a few days" → `numDays: 3`
-       - "about a week" / "a week" → `numDays: 7`
-       - "a long weekend" → `numDays: 3`
-       - "a fortnight" / "two weeks" → `numDays: 14`
-       - "a month" → `numDays: 30`
-    4. **Calculable from dates**: If `startDate` and `endDate` are both present, calculate `numDays = endDate - startDate`.
-    5. **Not mentioned at all**: If none of the above apply, set `numDays: null`.
+    3. **Calculable from dates**: If `startDate` and `endDate` are both present, calculate `numDays = endDate - startDate`.
+    4. **Not mentioned or only vague language**: If the user does NOT provide an explicit number or numeric range, set `numDays: null`. This includes casual phrases like:
+       - "a couple of days"
+       - "a few days"
+       - "some days"
+       - "for a while"
+       - "a short trip"
+       - "a long trip"
+       These are **NOT** valid inputs for numDays. Do NOT convert them to numbers. Set `numDays: null` and include `numDays` in `feedback`.
 
-    **IMPORTANT:** If the user provides ANY indication of trip duration (exact, range, or vague), `numDays` must NOT be `null` and must NOT appear in `feedback`.
+    **IMPORTANT:** Only populate `numDays` when you have an actual number or numeric range from the user. When in doubt, leave it `null`.
 
     =====================================================================
     🧩 FEEDBACK GENERATION RULES
@@ -243,7 +243,8 @@ trip_planning_agent = Agent(
     *Input:* "I want to plan a trip to China for couple of days, Selected Travelers - 1 adult, 1 child, Selected Travel Style - Luxury, Slow-Travel, Selected Activities - Nature, Art Museum, Cultural, Selected Number of Days - 11-15 days, Selected Start Date - no dates yet"
     *Analysis:*
       - "no dates yet" → negative constraint triggered → EXCLUDE startDate from feedback
-      - "11-15 days" → range → use lower bound → numDays = 11
+      - "couple of days" is casual language, NOT a numeric value → IGNORE it
+      - "Selected Number of Days - 11-15 days" → explicit numeric range → use lower bound → numDays = 11
       - travelStyle = ["Luxury", "Slow-Travel"]
       - activities = ["Nature", "Art Museum", "Cultural"]
       - pax = 1 adult, 1 child
@@ -263,6 +264,28 @@ trip_planning_agent = Agent(
       "pois": [],
       "feedback": ["experienceTypes"],
       "summary": "China with a luxury slow-travel vibe sounds incredible! What type of experiences are you looking for?"
+    }}
+
+    **Example 4: User uses vague language only, no explicit number**
+    *Input:* "I want to visit Japan for a few days, 2 adults."
+    *Analysis:*
+      - "a few days" is vague, NOT a numeric value → numDays = null → add to feedback
+      - No date refusal → startDate can go in feedback
+    *Output:*
+    {{
+      "startDate": null,
+      "endDate": null,
+      "numDays": null,
+      "destinations": ["Japan"],
+      "month": null,
+      "pax": {{"adults": 2, "children": 0, "infants": 0, "elderly": 0}},
+      "experienceTypes": null,
+      "travelStyle": null,
+      "activities": null,
+      "themes": null,
+      "pois": [],
+      "feedback": ["experienceTypes", "travelStyle", "activities", "numDays", "startDate"],
+      "summary": "Japan is a wonderful choice! What type of experiences are you hoping for?"
     }}
 
     =====================================================================
