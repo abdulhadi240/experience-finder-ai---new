@@ -672,7 +672,7 @@ Return ONLY:
 Today's date is {{today}}
 """,
     output_type=global_input_guardrail,
-    model="gpt-4o",
+    model="gpt-5.2",
 )
 
 
@@ -887,7 +887,7 @@ Each place on its own line:
 
 Today's date is {today}
 """,
-    model="gpt-4o",
+    model="gpt-5.2",
     output_type=Output_Format,
     tools=[
         rag, 
@@ -1011,7 +1011,7 @@ Each place on its own line:
 
 Today's date is {today}
 """,
-    model="gpt-4o",
+    model="gpt-5.2",
     output_type=Output_Format,
     tools=[
         rag, 
