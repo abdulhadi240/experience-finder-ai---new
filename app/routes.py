@@ -138,7 +138,7 @@ def get_error_stream_response(reason: str, solution: str):
         ttfb = first_chunk_time - start_time
         yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
 
-        if len(solution) < 20:
+        if len(solution) < 50:
             # Fallback to default travel-focused message
             chunks = [
                 '{"', "answer", '":"',
