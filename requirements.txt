@@ -24,3 +24,4 @@ opik
 streamlit
 websockets   # compatible with google-genai
 packaging    # compatible with streamlit
+redis>=5

@@ -1,131 +1,220 @@
-from queue import Full
+import os
+import json
+import time
+from typing import AsyncGenerator, Optional
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from agents import Runner
-import json
-import time
-from typing import AsyncGenerator
+
 from .schemas import QueryRequest, UserCreateRequest
 from .services import generate_stream, get_complete_response, get_complete_response_explore
 from .agents_ import validation_agent, explore_travel_agent
 from .memory import delete_user, create_new_user
-from .memory import check_user, get_message, add_message
+from .memory import check_user
+
+logger = logging.getLogger("chat.redis")
+# If you don't have logging configured elsewhere, this helps during local dev:
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+# ✅ Redis history helpers main
+# from .redis_history import (
+#     redis_enabled,
+#     get_or_create_conversation_id,
+#     fetch_recent_interactions,
+#     append_interaction,
+# )
+
+# testing - hardcoded values
+from .redis_history_local import (
+	get_redis,
+	redis_enabled,
+    get_or_create_conversation_id,
+    fetch_recent_interactions,
+    append_interaction,
+)
+
+OLD_INTERACTIONS_LIMIT = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "3"))
+OLD_INTERACTIONS_MAX   = int(os.getenv("REDIS_OLD_INTERACTIONS_MAX", "30"))
+REDIS_TTL              = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
+IDLE_CUTOFF_SECONDS    = int(os.getenv("REDIS_IDLE_CUTOFF_SECONDS", "1200"))
 
 router = APIRouter()
 
+
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
-    """
-    This endpoint routes requests based on content validation.
-    """
     try:
-        # Step 1: User and Thread setup
         thread_id = check_user(request.user_id)
         param = request.param
 
-        # Step 2: Build conversation context
-        final_message_with_current = build_conversation_context(request)
-        print(final_message_with_current)
+        # ✅ per-user conversation separation (idle window or explicit request.conversation_id)
+        conversation_id: Optional[str] = None
 
-        # Step 3: Run Validation Agent
-        print("validation")
+        try:
+            enabled = redis_enabled()
+            logger.info(
+                "Redis enabled check: %s (user_id=%s, request_conversation_id=%s)",
+                enabled,
+                request.user_id,
+                getattr(request, "conversation_id", None),
+            )
+
+            if enabled:
+                # Optional: ping Redis to ensure connectivity
+                try:
+                    r = await get_redis()  # import get_redis from your redis module
+                    pong = await r.ping()
+                    logger.info("Redis ping ok: %s", pong)
+                except Exception as ping_err:
+                    logger.exception(
+                        "Redis ping failed; will continue without Redis. err=%s",
+                        ping_err,
+                    )
+                    enabled = False
+
+            if enabled:
+                conversation_id = await get_or_create_conversation_id(
+                    user_id=str(request.user_id),
+                    idle_cutoff_seconds=IDLE_CUTOFF_SECONDS,
+                    ttl_seconds=REDIS_TTL,
+                    explicit_conversation_id=getattr(request, "conversation_id", None),
+                )
+                logger.info("Redis conversation_id selected: %s", conversation_id)
+            else:
+                logger.info("Redis disabled for this request; using request-only context.")
+
+        except Exception as e:
+            logger.exception(
+                "Unexpected Redis init error; proceeding without Redis. err=%s",
+                e,
+            )
+            conversation_id = None
+
+        final_message_with_current = await build_conversation_context(
+            request,
+            conversation_id=conversation_id,
+        )
+
+        logger.info(
+            "Context built (conversation_id=%s, context_len=%d)",
+            conversation_id,
+            len(final_message_with_current or ""),
+        )
+
         validation_result = await Runner.run(validation_agent, final_message_with_current)
-        print("validation_result:", validation_result.final_output)
 
-        # Step 4: Check Validity
         if not validation_result.final_output.isValid:
             return get_error_stream_response(
                 validation_result.final_output.reason,
-                validation_result.final_output.solution
+                validation_result.final_output.solution,
             )
 
-        # Step 5: Route based on travel relevance
         if validation_result.final_output.isTravelRelated:
             response_content = await get_complete_response(
                 final_message_with_current, thread_id, param
             )
-            return JSONResponse(content={
-                "response": jsonable_encoder(response_content),
-                "type": "non-streaming"
-            })
-        else:
-            agent = 'general_agent' if param == 'plan' else 'explore_agent'
-            print("Stream")
-            return StreamingResponse(
-                generate_stream(
-                    request.message, thread_id, request.reference,
-                    agent, final_message_with_current
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+
+            # ✅ save Q/A to Redis (non-streaming path)
+            try:
+                assistant_answer = _extract_assistant_text(response_content)
+                if conversation_id and assistant_answer:
+                    await append_interaction(
+                        user_id=str(request.user_id),
+                        conversation_id=conversation_id,
+                        question=request.message,
+                        answer=assistant_answer,
+                        max_items=OLD_INTERACTIONS_MAX,
+                        ttl_seconds=REDIS_TTL,
+                    )
+            except Exception as e:
+                logger.exception("Redis append_interaction failed: %s", e)
+
+            return JSONResponse(
+                content={
+                    "response": jsonable_encoder(response_content),
+                    "type": "non-streaming",
+                    "conversation_id": conversation_id,
+                }
             )
+
+        # ✅ streaming path — pass conversation_id so generate_stream can persist assistant answer
+        agent = "general_agent" if param == "plan" else "explore_agent"
+        return StreamingResponse(
+            generate_stream(
+                message=request.message,
+                thread_id=thread_id,
+                reference=request.reference,
+                agent=agent,
+                final_message=final_message_with_current,
+                user_id=str(request.user_id),
+                conversation_id=conversation_id,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 def clean_answer(answer: str) -> str:
-    """Remove POI metadata block (between $$$$$) from answer."""
     return answer.split('$$$$$')[0].strip()
 
 
-def build_conversation_context(request: QueryRequest) -> str:
-    """Build the final message with conversation history (max 3)."""
-    if not request.old_interactions:
+async def build_conversation_context(request: QueryRequest, conversation_id: Optional[str]) -> str:
+    interactions = []
+    if redis_enabled() and conversation_id:
+        try:
+            interactions = await fetch_recent_interactions(
+                user_id=str(request.user_id),
+                conversation_id=conversation_id,
+                limit=OLD_INTERACTIONS_LIMIT
+            )
+        except Exception as e:
+            print("Redis fetch_recent_interactions failed:", str(e))
+
+    if not interactions:
         return request.message
 
-    # Array is already latest → oldest from frontend
-    recent = request.old_interactions[:3]
+    blocks = []
+    for item in interactions:
+        q = (item.get("question") or "").strip()
+        a = clean_answer((item.get("answer") or "").strip())
+        if q and a:
+            blocks.append(f"User: {q}\nAssistant: {a}")
+        elif q:
+            blocks.append(f"User: {q}")
 
-    if len(recent) >= 3:
-        last = recent[0]      # Most recent = continuation
-        previous = recent[1]  # Second most recent
-        old = recent[2]       # Third most recent
+    if not blocks:
+        return request.message
 
-        old_conversation = (
-            f"User: {old.question}\nAssistant: {clean_answer(old.answer)}"
-        )
-        previous_conversation = (
-            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
-        )
-        last_conversation = (
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
-        )
-        return (
-            f"Previous conversations:\n{old_conversation}\n\n"
-            f"{previous_conversation}\n\n"
-            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
-            f"User asked: {request.message}"
-        )
+    history_text = "\n\n".join(blocks)
+    return (
+        f"Previous conversations:\n{history_text}\n\n"
+        f"(this is the continuation of the conversation)\n\n"
+        f"User asked: {request.message}"
+    )
 
-    elif len(recent) == 2:
-        last = recent[0]
-        previous = recent[1]
 
-        previous_conversation = (
-            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
-        )
-        last_conversation = (
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
-        )
-        return (
-            f"Previous conversation:\n{previous_conversation}\n\n"
-            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
-            f"User asked: {request.message}"
-        )
-
-    elif len(recent) == 1:
-        last = recent[0]
-        last_conversation = (
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
-        )
-        return (
-            f"Last conversation (this is the continuation of the conversation):\n{last_conversation}\n\n"
-            f"New question asked: {request.message}"
-        )
-
-    return request.message
+def _extract_assistant_text(response_content) -> Optional[str]:
+    if response_content is None:
+        return None
+    if isinstance(response_content, dict):
+        for k in ("answer", "response", "content", "message"):
+            v = response_content.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+    for attr in ("answer", "response", "content", "message"):
+        v = getattr(response_content, attr, None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
 
 
 def get_error_stream_response(reason: str, solution: str):
@@ -163,10 +252,11 @@ def get_error_stream_response(reason: str, solution: str):
 @router.get("/delete_user")
 async def delete_user_route(user_id: int = Query(..., description="The ID of the user to delete")):
     try:
-        result = delete_user(user_id)  
+        result = delete_user(user_id)
         return {"message": f"User {user_id} deleted successfully", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/create_user")
 async def create_user_route(user: UserCreateRequest):
@@ -180,6 +270,7 @@ async def create_user_route(user: UserCreateRequest):
         return {"message": "User created successfully", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/health")
 async def health_check():

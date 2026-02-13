@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     param: str
     threadId: Optional[str]
     old_interactions: Optional[list[Interaction]] = None
+    conversation_id: Optional[str] = None
     
     
 class Output_Format(BaseModel):
