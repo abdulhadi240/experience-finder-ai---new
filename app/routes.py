@@ -64,14 +64,18 @@ async def unified_chat(request: QueryRequest):
             )
 
             if enabled:
-                # Optional: ping Redis to ensure connectivity
                 try:
                     r = await get_redis()  # import get_redis from your redis module
-                    pong = await r.ping()
-                    logger.info("Redis ping ok: %s", pong)
+                    if not r:
+                        logger.warning(
+                            "Redis enabled but unavailable (get_redis returned None)."
+                        )
+                        enabled = False
+                    else:
+                        logger.info("Redis client ready.")
                 except Exception as ping_err:
                     logger.exception(
-                        "Redis ping failed; will continue without Redis. err=%s",
+                        "Redis ping/init failed; will continue without Redis. err=%s",
                         ping_err,
                     )
                     enabled = False
@@ -83,7 +87,12 @@ async def unified_chat(request: QueryRequest):
                     ttl_seconds=REDIS_TTL,
                     explicit_conversation_id=getattr(request, "conversation_id", None),
                 )
-                logger.info("Redis conversation_id selected: %s", conversation_id)
+                if conversation_id:
+                    logger.info("Redis conversation_id selected: %s", conversation_id)
+                else:
+                    logger.warning(
+                        "Redis enabled but conversation_id could not be created; proceeding without Redis."
+                    )
             else:
                 logger.info("Redis disabled for this request; using request-only context.")
 
@@ -159,6 +168,7 @@ async def unified_chat(request: QueryRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
