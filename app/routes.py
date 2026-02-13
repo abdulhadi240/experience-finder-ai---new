@@ -138,17 +138,29 @@ def get_error_stream_response(reason: str, solution: str):
         ttfb = first_chunk_time - start_time
         yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
 
-        chunks = [
-            '{"', "answer", '":"',
-            "Let", "'s", " keep", " it", " travel", "-focused", " ✨", ".\n\n",
-            "I", " can", " help", " you", " explore", " destinations", ",",
-            " discover", " experiences", ",", " and", " plan", " your", " trip", ".\n\n",
-            "What", " would", " you", " like", " to", " explore", " next", "?",
-            '"}', ""
-        ]
+        if len(solution) < 20:
+            # Fallback to default travel-focused message
+            chunks = [
+                '{"', "answer", '":"',
+                "Let", "'s", " keep", " it", " travel", "-focused", " ✨", ".\n\n",
+                "I", " can", " help", " you", " explore", " destinations", ",",
+                " discover", " experiences", ",", " and", " plan", " your", " trip", ".\n\n",
+                "What", " would", " you", " like", " to", " explore", " next", "?",
+                '"}', ""
+            ]
+            for chunk in chunks:
+                if chunk:
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+        else:
+            # Stream the JSON wrapper and solution word by word
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
 
-        for chunk in chunks:
-            yield f"data: {json.dumps({'content': chunk})}\n\n"
+            words = solution.split(" ")
+            for i, word in enumerate(words):
+                chunk = word if i == 0 else f" {word}"
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+
+            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
 
         end_time = time.time()
         yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'blocked': True})}\n\n"
@@ -158,8 +170,8 @@ def get_error_stream_response(reason: str, solution: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
-
-
+    
+    
 @router.get("/delete_user")
 async def delete_user_route(user_id: int = Query(..., description="The ID of the user to delete")):
     try:

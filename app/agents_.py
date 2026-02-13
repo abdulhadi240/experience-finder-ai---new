@@ -541,6 +541,7 @@ Return ONLY:
   "isValid": true | false,
   "reason": "...",
   "isTravelRelated": true | false
+  "solution": "Proper user friendly answer"
 
 
 Today's date is {{today}}
@@ -548,6 +549,7 @@ Today's date is {{today}}
     output_type=global_input_guardrail,
     model="gpt-4o",
 )
+
 
 explore_travel_agent = Agent(
       name="Guardrail check",
