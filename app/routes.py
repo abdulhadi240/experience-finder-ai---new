@@ -153,14 +153,14 @@ def get_error_stream_response(reason: str, solution: str):
                     yield f"data: {json.dumps({'content': chunk})}\n\n"
         else:
             # Stream the JSON wrapper and solution word by word
-            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n"
 
             words = solution.split(" ")
             for i, word in enumerate(words):
                 chunk = word if i == 0 else f" {word}"
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
+                yield f"data: {json.dumps({'content': chunk})}\n"
 
-            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+            yield f"data: {json.dumps({'content': '\"}'})}\n"
 
         end_time = time.time()
         yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'blocked': True})}\n\n"
