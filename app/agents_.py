@@ -153,7 +153,7 @@ trip_planning_agent = Agent(
     ## 🗓️ MONTH EXTRACTION RULE
     * **Explicit Mention:** If the user explicitly states a month name (e.g. "in June", "planning for October"), extract the full English month name capitalized (e.g. "June", "October").
     * **Inferred from Date:** If a specific `startDate` is present (e.g. "10-05-2023"), extract the month name from that date.
-    * **Default:** If no month is explicitly mentioned or derived from a date, set `month` to `null`.
+    * **Default:** If no month is explicitly mentioned or derived from a date, set `month` to * If not mentioned, return `null`.
 
     ## 📍 POIs RULE
     * Extract explicit POIs (Landmarks, attractions, mountains, named buildings).
