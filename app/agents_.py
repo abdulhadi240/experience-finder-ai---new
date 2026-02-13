@@ -25,17 +25,17 @@ trip_planning_agent = Agent(
     
     ---------------------------------------------------------------------
     
-   Important Rule:
+    Important Rule:
 
-You will be given the last 3 messages from the conversation history. You must analyze whether a destination is mentioned — either directly or indirectly.
+    You will be given the last 3 messages from the conversation history. You must analyze whether a destination is mentioned — either directly or indirectly.
 
-- **Directly mentioned**: The user explicitly states a destination (e.g., "I want to go to Reno").
-- **Indirectly mentioned**: The destination is not stated outright but can be inferred from context clues within the conversation. For example, if the user is discussing "neighbours in Reno," the destination is not explicitly requested, but "Reno" can be identified as the relevant destination from the surrounding context.
+    - **Directly mentioned**: The user explicitly states a destination (e.g., "I want to go to Reno").
+    - **Indirectly mentioned**: The destination is not stated outright but can be inferred from context clues within the conversation. For example, if the user is discussing "neighbours in Reno," the destination is not explicitly requested, but "Reno" can be identified as the relevant destination from the surrounding context.
 
-Since you only receive the last 3 messages, the destination itself may not appear in the current message but may be referenced contextually (e.g., talking about people, places, or events associated with a location). In such cases, you must analyze the context and identify the underlying destination.
+    Since you only receive the last 3 messages, the destination itself may not appear in the current message but may be referenced contextually (e.g., talking about people, places, or events associated with a location). In such cases, you must analyze the context and identify the underlying destination.
 
-- If a destination is found (directly or indirectly), you must use that destination.
-- If no destination can be identified from the conversation history, include it in the feedback as instructed below.
+    - If a destination is found (directly or indirectly), you must use that destination.
+    - If no destination can be identified from the conversation history, include it in the feedback as instructed below.
     
     ---------------------------------------------------------------------
     
@@ -46,6 +46,7 @@ Since you only receive the last 3 messages, the destination itself may not appea
         endDate: Optional[str] = Field(None, description="End date in MM-dd-yyyy format.")
         numDays: Optional[int] = Field(None, description="Trip duration in days.")
         destinations: list[str] = Field(..., description="Explicitly mentioned destinations.")
+        month: Optional[str] = Field(None, description="Explicitly mentioned month (e.g. 'October'). Null if not mentioned.")
         pax: Pax = Field(..., description="Traveler counts. Null if not mentioned.")
         experienceTypes: Optional[list[str]] = Field(None)
         travelStyle: Optional[list[str]] = Field(None)
@@ -98,6 +99,7 @@ Since you only receive the last 3 messages, the destination itself may not appea
         * `pois`
         * `destinations`
         * `endDate`
+        * `month`
 
     ---------------------------------------------------------------------
 
@@ -112,16 +114,18 @@ Since you only receive the last 3 messages, the destination itself may not appea
       "numDays": 4,
       "pax": "2 adults, 2 children",
       "startDate": null,
+      "month": null,
       "feedback": ["experienceTypes", "travelStyle", "activities"]  <-- NOTE: "startDate" is ABSENT.
     }}
 
-    **Example 2: User forgets date**
-    *Input:* "Trip to Paris."
-    *Analysis:* No date mentioned, no refusal phrases.
+    **Example 2: User mentions Month only**
+    *Input:* "Trip to Paris in October."
+    *Analysis:* Specific month mentioned, no specific date.
     *Output:*
     {{
       "destinations": ["Paris"],
       "startDate": null,
+      "month": "October",
       "feedback": ["startDate", "numDays", "pax", "experienceTypes", "travelStyle", "activities"]
     }}
 
@@ -137,16 +141,6 @@ Since you only receive the last 3 messages, the destination itself may not appea
        * Ask a friendly question *specifically* about that one item.
        * **DO NOT** ask for multiple things at once.
     
-    *Example 1:*
-    *Input:* "5 days in Tokyo"
-    *Feedback List:* `["pax", "travelStyle", "activities"]` (first item is "pax")
-    *Summary:* "Tokyo is an incredible destination for five days—who will you be traveling with?"
-
-    *Example 2:*
-    *Input:* "Just me and my wife" (Context: Tokyo, 5 days)
-    *Feedback List:* `["travelStyle", "activities"]` (first item is "travelStyle")
-    *Summary:* "A couple's trip sounds wonderful! What is your preferred travel style?"
-    
     ---------------------------------------------------------------------
     
     ## 📅 DATE EXTRACTION RULES
@@ -155,6 +149,11 @@ Since you only receive the last 3 messages, the destination itself may not appea
     * If dates cannot be resolved, leave as `null`.
     * **Calculations:** - startDate + numDays → endDate
       - startDate + endDate → numDays
+
+    ## 🗓️ MONTH EXTRACTION RULE
+    * **Explicit Mention:** If the user explicitly states a month name (e.g. "in June", "planning for October"), extract the full English month name capitalized (e.g. "June", "October").
+    * **Inferred from Date:** If a specific `startDate` is present (e.g. "10-05-2023"), extract the month name from that date.
+    * **Default:** If no month is explicitly mentioned or derived from a date, set `month` to `null`.
 
     ## 📍 POIs RULE
     * Extract explicit POIs (Landmarks, attractions, mountains, named buildings).
