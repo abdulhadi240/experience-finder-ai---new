@@ -118,14 +118,20 @@ async def unified_chat(request: QueryRequest):
         try:
             rag_response = rag(query=request.message, reference=request.reference)
             chunks = rag_response.get("chunks", [])
+            audience = rag_response.get("audience", [])
+            travel_style = rag_response.get("travel_style", [])
             note = rag_response.get("note", "")
         except Exception as e:
             print(f"RAG failed, falling back to agent: {e}")
-            chunks = ["fallback"]  # Force agent path
+            chunks = ["fallback"]
+            audience = []
+            travel_style = []
             note = ""
 
-        # Step 4: No chunks — stream the note back
-        if not chunks and note:
+         # Step 4: RAG has no useful data — stream the note back
+        rag_has_data = bool(chunks or audience or travel_style)
+        
+        if not rag_has_data and note:
             add_message(role='assistant', thread_id=thread_id, message=note)
             return get_rag_note_stream_response(note, thread_id, param)
 
