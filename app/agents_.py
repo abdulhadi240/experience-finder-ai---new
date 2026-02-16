@@ -297,7 +297,7 @@ trip_planning_agent = Agent(
     * Every field in the schema must be present in the output.
     """,
 
-    model="gpt-5.2",
+    model="gpt-4.1-mini",
     output_type=TripPlan,
     handoff_description="Extracts trip plans. Handles date refusals and day ranges intelligently."
 )
@@ -558,6 +558,8 @@ Provide a helpful, travel-focused answer to the query.
 
 **If OFF_TOPIC (isValid: false):**
 Politely decline and redirect toward a travel-related angle. Never offer to help with the non-travel version.
+
+## Always make the solution small and ask one question at a time only
 
 Examples:
 
