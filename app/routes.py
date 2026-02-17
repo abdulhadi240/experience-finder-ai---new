@@ -76,16 +76,14 @@ def get_rag_note_stream_response(note: str, thread_id: str, param: str):
         yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
 
         # Stream the note as JSON wrapper word by word (same format as your error stream)
-        answer_open = json.dumps({"content": '{"answer":"'})
-        yield f"data: {answer_open}\n\n"
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
 
         words = note.split(" ")
         for i, word in enumerate(words):
             chunk = word if i == 0 else f" {word}"
             yield f"data: {json.dumps({'content': chunk})}\n\n"
 
-        answer_close = json.dumps({"content": '"}'})
-        yield f"data: {answer_close}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
 
         end_time = time.time()
         yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'rag_streaming'})}\n\n"
