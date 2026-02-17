@@ -626,7 +626,8 @@ $$$$$
 ### RAG Places (STRICT FORMAT)
 Use ONLY when relevant data exists in RAG.
 Each place on its own line:
-`**Place Name** [type: "hotel|restaurant|place|activity", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": "rag"]`
+`**Place Name** [type: "hotel|restaurant|place|activity", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": <priceLevel | null>, "content": "<content>", "source": "rag"]`
+
 
 ### Web Search Places (STRICT FORMAT)
 Use when RAG is empty or irrelevant.
@@ -749,7 +750,9 @@ $$$$$
 ### RAG Places (STRICT FORMAT)
 Use ONLY when relevant data exists in RAG.
 Each place on its own line:
-`**Place Name** [type: "hotel|restaurant|place|activity", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": "<priceLevel>", "content": "<content>", "source": "rag"]`
+`**Place Name** [type: "hotel|restaurant|place|activity", "id": "<id>", "name": "<name>", "lat": <lat>, "lng": <lng>, "address": "<address>", "image": "<image>", "rating": "<rating>", "priceLevel": <priceLevel | null>, "content": "<content>", "source": "rag"]`
+
+
 
 ### Web Search Places (STRICT FORMAT)
 Use when RAG is empty or irrelevant.
