@@ -249,8 +249,8 @@ def research_further(query: str):
             print("Query cannot be empty or None")
             return
         
-        url = "https://ai.hiptraveler/validator/process" # https://experience-finder-ai-new.onrender.com
-        payload = {"query": query_inner.strip()}
+        url = "https://experience-finder-ai-new.onrender.com/validator/process" # https://experience-finder-ai-new.onrender.com
+        payload = {"query": query_inner.strip(),"reference": "hiptraveler"}
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         
         try:
