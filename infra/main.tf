@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+  	   source  = "hashicorp/random"
+  	   version = "~> 3.6"
+	}
   }
 
   backend "s3" {
@@ -96,6 +100,21 @@ variable "ssm_param_zep" {
 variable "acm_certificate_arn" {
   type        = string
   description = "ARN of the ACM certificate for hiptraveler.com"
+}
+
+variable "redis_node_type" {
+  type    = string
+  default = "cache.t4g.medium"
+}
+
+variable "redis_engine_version" {
+  type    = string
+  default = "7.1"
+}
+
+variable "ssm_param_redis_auth_token" {
+  type    = string
+  default = "/agentic/REDIS_AUTH_TOKEN"
 }
 
 ########################################
@@ -242,6 +261,74 @@ resource "aws_security_group" "service_sg" {
 
   tags = { Name = "${var.project_name}-service-sg" }
 }
+
+########################################
+# Redis (ElastiCache)
+########################################
+
+resource "aws_security_group" "redis_sg" {
+  name        = "${var.project_name}-redis-sg"
+  description = "Security group for Redis"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "Redis from ECS service"
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.service_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.project_name}-redis-sg" }
+}
+
+resource "aws_elasticache_subnet_group" "redis" {
+  name       = "${var.project_name}-redis-subnets"
+  subnet_ids = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+}
+
+resource "random_password" "redis_auth_token" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "redis_auth_token" {
+  name        = var.ssm_param_redis_auth_token
+  description = "Redis AUTH token for ${var.project_name}"
+  type        = "SecureString"
+  value       = random_password.redis_auth_token.result
+}
+
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id       = replace("${var.project_name}-redis", "_", "-")
+  description                = "Redis for ${var.project_name} sessions"
+  engine                     = "redis"
+  engine_version             = var.redis_engine_version
+  node_type                  = var.redis_node_type
+  port                       = 6379
+
+  num_cache_clusters         = 1
+  automatic_failover_enabled = false
+
+  subnet_group_name          = aws_elasticache_subnet_group.redis.name
+  security_group_ids         = [aws_security_group.redis_sg.id]
+
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
+  auth_token                 = aws_ssm_parameter.redis_auth_token.value
+}
+
+output "redis_primary_endpoint" {
+  value = aws_elasticache_replication_group.redis.primary_endpoint_address
+}
+
 
 ########################################
 # Load Balancer + Target Group + Listener
@@ -402,7 +489,17 @@ resource "aws_ecs_task_definition" "task" {
         protocol      = "tcp"
       }],
       environment = [
-        { name = "APP_ENV", value = "prod" }
+        { name = "APP_ENV", value = "prod" },
+        { name = "REDIS_HOST", value = aws_elasticache_replication_group.redis.primary_endpoint_address },
+		{ name = "REDIS_PORT", value = "6379" },
+		{ name = "REDIS_USE_TLS", value = "true" },
+		{ name = "REDIS_ENABLED", value = "false" },
+
+		# Your app knobs:
+		{ name = "REDIS_TTL_SECONDS", value = "3600" },
+		{ name = "REDIS_IDLE_CUTOFF_SECONDS", value = "1200" },
+		{ name = "REDIS_OLD_INTERACTIONS_LIMIT", value = "3" },
+		{ name = "REDIS_OLD_INTERACTIONS_MAX", value = "30" },
       ],
       secrets = [
         { name = "OPENAI_API_KEY", valueFrom = var.ssm_param_openai },
@@ -412,7 +509,8 @@ resource "aws_ecs_task_definition" "task" {
         { name = "SUPABASE_PROJECT_ID",        valueFrom = var.ssm_param_supabase_project_id },
         { name = "SUPABASE_KEY",               valueFrom = var.ssm_param_supabase_key },
         { name = "SUPABASE_SERVICE_ROLE_KEY",  valueFrom = var.ssm_param_supabase_service_role_key },
-        { name = "PERPLEXITY_API_KEY",         valueFrom = var.ssm_param_perplexity_api_key }
+        { name = "PERPLEXITY_API_KEY",         valueFrom = var.ssm_param_perplexity_api_key },
+        { name = "REDIS_AUTH_TOKEN", valueFrom = var.ssm_param_redis_auth_token },
       ],
       logConfiguration = {
         logDriver = "awslogs",
@@ -440,6 +538,9 @@ resource "aws_ecs_service" "svc" {
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
   platform_version = "1.4.0"
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 60
 
   network_configuration {
     subnets         = [aws_subnet.public_a.id, aws_subnet.public_b.id]
