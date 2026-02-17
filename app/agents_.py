@@ -235,7 +235,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["pax", "experienceTypes", "travelStyle", "activities", "numDays", "startDate"],
+      "feedback": [ "numDays", "startDate","pax", "experienceTypes", "travelStyle", "activities"],
       "summary": "Paris in October — what a beautiful choice! How many travelers will be joining this trip?"
     }}
 
@@ -284,7 +284,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["experienceTypes", "travelStyle", "activities", "numDays", "startDate"],
+      "feedback": ["numDays", "startDate","experienceTypes", "travelStyle", "activities"],
       "summary": "Japan is a wonderful choice! What type of experiences are you hoping for?"
     }}
 
