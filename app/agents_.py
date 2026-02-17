@@ -125,6 +125,8 @@ trip_planning_agent = Agent(
         * `travelStyle`
         * `activities`
         
+        **DO NOT** add experienceTypes to feedback.
+        
 
     **Step 2 — Conditional Field: `startDate`**
         * If `startDate` has a value → **DO NOT** add to feedback.
