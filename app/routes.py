@@ -99,14 +99,6 @@ def get_rag_note_stream_response(note: str, thread_id: str, param: str):
 
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
-    """
-    Flow:
-      1. Validate
-      2. If travel related → check RAG first
-         - RAG has data → trip planner agent
-         - RAG empty → stream the note
-      3. If not travel related → stream general/explore agent
-    """
     try:
         # Step 1: User and Thread setup
         thread_id = check_user(request.user_id)
@@ -116,43 +108,42 @@ async def unified_chat(request: QueryRequest):
         final_message_with_current = build_conversation_context(request)
         print(final_message_with_current)
 
-        # Step 3: Run Validation Agent
+        # Step 3: Ask RAG first (applies to ALL modes)
+        try:
+            rag_response = rag(query=request.message, reference=request.reference)
+            chunks = rag_response.get("chunks", [])
+            audience = rag_response.get("audience", [])
+            travel_style = rag_response.get("travel_style", [])
+            note = rag_response.get("note", "")
+        except Exception as e:
+            print(f"RAG failed, falling back to agent: {e}")
+            chunks = ["fallback"]
+            audience = []
+            travel_style = []
+            note = ""
+
+        # Step 4: RAG has no useful data — stream the note back
+        rag_has_data = bool(chunks or audience or travel_style)
+        rag_country_detected = "Answer retrieved for detected country" in note
+
+        if not rag_has_data and not rag_country_detected and note:
+            add_message(role='assistant', thread_id=thread_id, message=note)
+            return get_rag_note_stream_response(note, thread_id, param)
+
+        # Step 5: RAG is good — proceed with validation
         print("validation")
         validation_result = await Runner.run(validation_agent, final_message_with_current)
         print("validation_result:", validation_result.final_output)
 
-        # Step 4: Check Validity
+        # Step 6: Check Validity
         if not validation_result.final_output.isValid:
             return get_error_stream_response(
                 validation_result.final_output.reason,
                 validation_result.final_output.solution
             )
 
-        # Step 5: Route based on travel relevance
+        # Step 7: Route based on travel relevance
         if validation_result.final_output.isTravelRelated:
-
-            # Step 5a: Ask RAG first
-            try:
-                rag_response = rag(query=request.message, reference=request.reference)
-                chunks = rag_response.get("chunks", [])
-                audience = rag_response.get("audience", [])
-                travel_style = rag_response.get("travel_style", [])
-                note = rag_response.get("note", "")
-            except Exception as e:
-                print(f"RAG failed, falling back to agent: {e}")
-                chunks = ["fallback"]
-                audience = []
-                travel_style = []
-                note = ""
-
-            rag_has_data = bool(chunks or audience or travel_style)
-
-            # Step 5b: RAG empty → stream the note
-            if not rag_has_data and note:
-                add_message(role='assistant', thread_id=thread_id, message=note)
-                return get_rag_note_stream_response(note, thread_id, param)
-
-            # Step 5c: RAG has data → trip planner agent
             response_content = await get_complete_response(
                 final_message_with_current, thread_id, param
             )
@@ -160,7 +151,6 @@ async def unified_chat(request: QueryRequest):
                 "response": jsonable_encoder(response_content),
                 "type": "non-streaming"
             })
-
         else:
             agent = 'general_agent' if param == 'plan' else 'explore_agent'
             print("Stream")
