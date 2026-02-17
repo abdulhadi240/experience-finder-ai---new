@@ -118,12 +118,14 @@ trip_planning_agent = Agent(
     Construct the `feedback` list by checking these specific fields in the order below.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
+        * `startDate`(if condition passed)
+        * `numDays`
         * `destinations`
         * `pax`
         * `experienceTypes`
         * `travelStyle`
         * `activities`
-        * `numDays`
+        
 
     **Step 2 — Conditional Field: `startDate`**
         * If `startDate` has a value → **DO NOT** add to feedback.
