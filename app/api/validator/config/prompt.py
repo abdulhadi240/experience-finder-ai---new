@@ -27,7 +27,9 @@ This also includes queries like "Where is the best place for [activity]?" when n
 </examples>
 <action>
 1. Identify the main topic (e.g., food, attractions, hotels, activities).
-2. Find the top 5 popular or relevant items for that topic and location.
+2. Determine how many results to generate:
+   - If the user specifies a number (e.g., "top 10"), generate that many sub-queries (capped at 10).
+   - If no number is specified, default to 5.
 3. Generate 5 new sub-queries — one for each item — that are short, searchable queries.
 4. Each sub-query MUST follow this exact format:
    "[Name of place], [City/Country] — [topic keyword]"
