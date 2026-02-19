@@ -5,7 +5,7 @@ import httpx
 from typing import AsyncGenerator, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from agents import Runner
 
@@ -25,13 +25,11 @@ router = APIRouter()
 
 # ─── RAG Helper ──────────────────────────────────────────────────
 
-# Module-level shared client — one connection pool reused across all requests.
-# httpx.AsyncClient is fully async: no threads consumed, scales to thousands of
-# concurrent requests without exhausting any thread pool.
+# Shared async client — one connection pool for all requests, zero thread usage
 _rag_client = httpx.AsyncClient(timeout=30.0)
 
 async def rag(query: str, reference: str) -> Dict[str, Any]:
-    """Async RAG call. Uses the shared httpx client — zero thread usage."""
+    """Fully async RAG call via shared httpx client."""
     if not query or not query.strip():
         raise ValueError("Query cannot be empty or None")
 
@@ -59,193 +57,129 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
         raise Exception(f"RAG HTTP error: {e}")
 
 
-# ─── Pipeline Decision (RAG + validation only, no agent call) ────
+# ─── Streaming-with-loading generator (isTravelRelated=False only) ──
 
-async def run_pipeline_decision(request: QueryRequest) -> dict:
+async def streaming_with_loading(
+    context: str,
+    agent_name: str,
+    final_message_with_ref: str,
+    original_message: str,
+    thread_id: str,
+    param: str,
+) -> AsyncGenerator[str, None]:
     """
-    Runs RAG (non-blocking) → validation → routing decision.
+    SSE generator used only when isTravelRelated=False.
 
-    For the streaming path it returns ROUTING INFO only — the agent is NOT
-    called here.  The caller starts the agent separately so it can interrupt
-    loading messages the moment the first token arrives.
+    Two concurrent tasks start immediately:
+      • statements_task — gpt-4.1-nano generates 6 personalised loading messages
+                          from the full conversation context (history + destination).
+      • stream_agent_to_queue — agent tokens land in token_queue as they arrive.
 
-    For non-streaming paths (trip planning, error, rag-note) the full result
-    is produced here so loading covers the entire wait.
+    Loading stages fire on a timer until the FIRST token arrives in the queue,
+    at which point loading stops immediately and tokens stream live (≤50 ms delay).
+
+    statements[0-2] used at stages 0-2 (0.5 s, 3 s, 6 s)
+    statements[3-5] used at stages 3-5 (10 s, 15 s, 20 s)
+    Static fallback pool used if LLM call not ready in time.
     """
-    thread_id     = check_user(request.user_id)
-    param         = request.param
-    final_message = build_conversation_context(request)
-
-    # RAG — fully async via httpx, no thread pool needed
-    try:
-        rag_response = await rag(query=request.message, reference=request.reference)
-        note = rag_response.get("note", "")
-    except Exception as e:
-        print(f"RAG failed, falling back: {e}")
-        note = ""
-
-    # Scoped-note short-circuit
-    if "This portal is scoped to" in note and "Please ask about that destination" in note:
-        return {"type": "rag_note", "note": note, "thread_id": thread_id, "param": param}
-
-    # Validation
-    print("validation")
-    validation_result = await Runner.run(validation_agent, final_message)
-    print("validation_result:", validation_result.final_output)
-
-    if not validation_result.final_output.isValid:
-        return {
-            "type": "error",
-            "reason": validation_result.final_output.reason,
-            "solution": validation_result.final_output.solution,
-            "thread_id": thread_id,
-            "param": param,
-        }
-
-    final_message_with_ref = final_message + "\n\nReference : " + request.reference
-
-    if validation_result.final_output.isTravelRelated:
-        # Trip planning: run the full agent here; loading covers the entire wait
-        response_content, timing_info = await get_complete_response(final_message, thread_id, param)
-        return {
-            "type": "non_streaming",
-            "data": jsonable_encoder(response_content),
-            "thread_id": thread_id,
-            "param": param,
-            "timing_info": timing_info,
-        }
-
-    # Streaming path: return routing info only — agent starts in chat_stream_generator
-    return {
-        "type": "streaming",
-        "agent_name": "general_agent" if param == "plan" else "explore_agent",
-        "final_message_with_ref": final_message_with_ref,
-        "thread_id": thread_id,
-        "param": param,
-    }
-
-
-# ─── Unified SSE Generator ────────────────────────────────────────
-
-async def chat_stream_generator(request: QueryRequest) -> AsyncGenerator[str, None]:
-
     start_time = time.time()
-    param      = request.param
 
-    # ── t=0: signal receipt — zero latency ──────────────────────
-    yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+    yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
-    # ── Two concurrent tasks fire immediately ────────────────────
-    statements_task = asyncio.create_task(generate_loading_statements(request.message, param))
-    decision_task   = asyncio.create_task(run_pipeline_decision(request))
+    # Both tasks start at t=0 — zero added latency
+    statements_task = asyncio.create_task(generate_loading_statements(context, param))
+
+    token_queue = asyncio.Queue()
+    asyncio.create_task(
+        stream_agent_to_queue(
+            agent_name=agent_name,
+            final_message_with_ref=final_message_with_ref,
+            original_message=original_message,
+            thread_id=thread_id,
+            queue=token_queue,
+        )
+    )
 
     stage_index = 0
     loop_start  = time.time()
-    statements  = []   # filled once statements_task completes
+    statements  = []
+    first_token = False
 
-    # ── PHASE 1: loading while pipeline decision runs ────────────
-    while not decision_task.done():
-        elapsed_ms = (time.time() - loop_start) * 1000
+    while True:
+        # Non-blocking poll for next agent token
+        try:
+            token = token_queue.get_nowait()
 
-        if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
-            if not statements and statements_task.done():
-                try:
-                    statements = statements_task.result()
-                except Exception:
-                    statements = []
+            if token is None:                       # sentinel — stream complete
+                break
+            if isinstance(token, Exception):
+                yield f"data: {json.dumps({'error': str(token)})}\n\n"
+                break
 
-            msg = (
-                statements[stage_index]
-                if statements and stage_index < len(statements)
-                else get_loading_message(stage_index, None, param)
-            )
-            yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
-            stage_index += 1
+            # First token → interrupt loading immediately
+            if not first_token:
+                first_token = True
+                ttfb = time.time() - start_time
+                yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
 
-        await asyncio.sleep(0.1)
+            yield f"data: {json.dumps({'content': token})}\n\n"
 
-    # ── Retrieve decision ────────────────────────────────────────
-    try:
-        result = decision_task.result()
-    except Exception as e:
-        if not statements_task.done():
-            statements_task.cancel()
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
-        return
+        except asyncio.QueueEmpty:
+            # No token yet — advance loading stages while waiting
+            if not first_token:
+                elapsed_ms = (time.time() - loop_start) * 1000
 
-    r_type    = result["type"]
-    thread_id = result.get("thread_id", "")
+                if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
+                    if not statements and statements_task.done():
+                        try:
+                            statements = statements_task.result()
+                        except Exception:
+                            statements = []
 
-    # ── PHASE 2 (streaming path only) ───────────────────────────
-    if r_type == "streaming":
-        token_queue = asyncio.Queue()
+                    msg = (
+                        statements[stage_index]
+                        if statements and stage_index < len(statements)
+                        else get_loading_message(stage_index, None, param)
+                    )
+                    yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
+                    stage_index += 1
 
-        # Start agent — tokens land in queue as they arrive
-        asyncio.create_task(
-            stream_agent_to_queue(
-                agent_name             = result["agent_name"],
-                final_message_with_ref = result["final_message_with_ref"],
-                original_message       = request.message,
-                thread_id              = thread_id,
-                queue                  = token_queue,
-            )
-        )
+            await asyncio.sleep(0.05)
 
-        first_token = False
+    if not statements_task.done():
+        statements_task.cancel()
 
-        while True:
-            # ── Non-blocking queue poll ──────────────────────────
-            try:
-                token = token_queue.get_nowait()
+    end_time = time.time()
+    yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'threadId': thread_id, 'param': param})}\n\n"
 
-                if token is None:                       # sentinel — stream complete
-                    break
-                if isinstance(token, Exception):
-                    yield f"data: {json.dumps({'error': str(token)})}\n\n"
-                    break
 
-                # First token arrived → interrupt loading immediately
-                if not first_token:
-                    first_token = True
-                    ttfb = time.time() - start_time
-                    yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
+# ─── Error / RAG-note stream helpers ─────────────────────────────
 
-                yield f"data: {json.dumps({'content': token})}\n\n"
-
-            except asyncio.QueueEmpty:
-                # No token yet — advance loading stages while waiting
-                if not first_token:
-                    elapsed_ms = (time.time() - loop_start) * 1000
-                    if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
-                        if not statements and statements_task.done():
-                            try:
-                                statements = statements_task.result()
-                            except Exception:
-                                statements = []
-
-                        msg = (
-                            statements[stage_index]
-                            if statements and stage_index < len(statements)
-                            else get_loading_message(stage_index, None, param)
-                        )
-                        yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
-                        stage_index += 1
-
-                # 50 ms poll — keeps interrupt latency low
-                await asyncio.sleep(0.05)
-
-    # ── Non-streaming / error / rag-note responses ───────────────
-    elif r_type == "rag_note":
-        note = result["note"]
+def get_rag_note_stream_response(note: str, thread_id: str, param: str):
+    async def _gen() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(note.split()):
             chunk = word if i == 0 else f" {word}"
             yield f"data: {json.dumps({'content': chunk})}\n\n"
         yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'rag_streaming'})}\n\n"
 
-    elif r_type == "error":
-        solution = result["solution"]
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+def get_error_stream_response(reason: str, solution: str):
+    async def _gen() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+
         if len(solution) < 50:
             for chunk in [
                 '{"', "answer", '":"',
@@ -262,49 +196,89 @@ async def chat_stream_generator(request: QueryRequest) -> AsyncGenerator[str, No
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield f"data: {json.dumps({'content': '\"}'})}\n\n"
 
-    elif r_type == "non_streaming":
-        yield f"data: {json.dumps({'response': result['data'], 'type': 'non-streaming', 'threadId': thread_id, 'param': result['param']})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'blocked': True})}\n\n"
 
-    # ── Cleanup + done event ─────────────────────────────────────
-    if not statements_task.done():
-        statements_task.cancel()
-
-    end_time     = time.time()
-    done_payload = {
-        "done":          True,
-        "total_time":    end_time - start_time,
-        "threadId":      thread_id,
-        "param":         param,
-        "response_type": r_type,
-    }
-    if r_type == "error":
-        done_payload["blocked"] = True
-    if r_type == "non_streaming" and "timing_info" in result:
-        done_payload.update(result["timing_info"])
-
-    yield f"data: {json.dumps(done_payload)}\n\n"
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 # ─── Main Chat Route ──────────────────────────────────────────────
 
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
-    return StreamingResponse(
-        chat_stream_generator(request),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
+    try:
+        thread_id     = check_user(request.user_id)
+        param         = request.param
+        final_message = build_conversation_context(request)
+
+        # RAG
+        try:
+            rag_response = await rag(query=request.message, reference=request.reference)
+            note         = rag_response.get("note", "")
+        except Exception as e:
+            print(f"RAG failed, falling back: {e}")
+            note = ""
+
+        is_scoped_note = (
+            "This portal is scoped to" in note
+            and "Please ask about that destination" in note
+        )
+        if is_scoped_note:
+            return get_rag_note_stream_response(note, thread_id, param)
+
+        # Validation
+        print("validation")
+        validation_result = await Runner.run(validation_agent, final_message)
+        print("validation_result:", validation_result.final_output)
+
+        if not validation_result.final_output.isValid:
+            return get_error_stream_response(
+                validation_result.final_output.reason,
+                validation_result.final_output.solution,
+            )
+
+        final_message_with_ref = final_message + "\n\nReference : " + request.reference
+
+        # isTravelRelated=True → original JSON response, no loading messages
+        if validation_result.final_output.isTravelRelated:
+            response_content, timing_info = await get_complete_response(
+                final_message, thread_id, param
+            )
+            return JSONResponse(content={
+                "response": jsonable_encoder(response_content),
+                "type": "non-streaming",
+            })
+
+        # isTravelRelated=False → streaming with loading messages
+        agent_name = "general_agent" if param == "plan" else "explore_agent"
+
+        return StreamingResponse(
+            streaming_with_loading(
+                context=final_message,
+                agent_name=agent_name,
+                final_message_with_ref=final_message_with_ref,
+                original_message=request.message,
+                thread_id=thread_id,
+                param=param,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Helper Functions ─────────────────────────────────────────────
 
 def clean_answer(answer: str) -> str:
-    """Remove POI metadata block (between $$$$$) from answer."""
     return answer.split("$$$$$")[0].strip()
 
 
 def build_conversation_context(request: QueryRequest) -> str:
-    """Build the final message with conversation history (max 3)."""
     if not request.old_interactions:
         return request.message
 
