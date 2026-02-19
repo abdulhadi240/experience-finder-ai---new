@@ -363,9 +363,11 @@ async def process_query_research(
     original_query: str,
     query_type: str,
     supabase_service: SupabaseService,
-    reference: str
+    reference: str,
+    skip_storage: bool = False,
 ) -> Dict[str, Any]:
-    """Runs validation, converts to attraction format, and saves to Supabase."""
+    """Runs validation, converts to attraction format, and saves to Supabase.
+    When skip_storage=True, skips all RAG upserts and Supabase inserts."""
     load_dotenv()
     
     # ============================================
@@ -508,7 +510,16 @@ async def process_query_research(
             print(f"{'📊'*40}")
             print(f"📊 Score Value: {score_value}/3")
 
-            if score_value >= 2:
+            formatted_data["score_value"] = score_value
+            formatted_data["google_maps_place_id"] = maps_data.get("place_id") if maps_data else None
+
+            if skip_storage:
+                print(f"📊 Action: Read-only mode (skip_storage=True) — no RAG upsert, no Supabase insert")
+                print(f"{'📊'*40}\n")
+                formatted_data["rag_upserted"] = False
+                formatted_data["db_id"] = None
+
+            elif score_value >= 2:
                 print(f"📊 Action: Upsert to RAG only (skip database)")
                 print(f"{'📊'*40}\n")
 
@@ -612,6 +623,57 @@ async def process_in_background(query: str, reference: str):
 
 
 # -------------------------------------------------------
+# Deep Validation Processing (awaitable, returns filtered results)
+# -------------------------------------------------------
+async def process_deep_validation(query: str, reference: str) -> List[Dict[str, Any]]:
+    """Run the same research pipeline as process_in_background but await results
+    and return only items with score >= 2."""
+    print(f"\n{'='*80}")
+    print(f"🔬 Deep Validation Started")
+    print(f"Query: {query}")
+    print(f"Reference: {reference}")
+    print(f"{'='*80}\n")
+
+    openai_service = OpenAIService()
+    supabase_service = SupabaseService()
+
+    classification = await openai_service.classify_query(query)
+    print(f"✅ Classification completed: {classification.get('type')}")
+
+    all_results: List[Dict[str, Any]] = []
+
+    if classification.get("queries"):
+        if len(classification["queries"]) == 1:
+            result = await process_query_research(
+                classification["queries"][0],
+                query,
+                classification["type"],
+                supabase_service,
+                reference,
+                skip_storage=True,
+            )
+            if result is not None:
+                all_results.append(result)
+        else:
+            tasks = [
+                process_query_research(q, query, classification["type"], supabase_service, reference, skip_storage=True)
+                for q in classification["queries"]
+            ]
+            gathered = await asyncio.gather(*tasks)
+            all_results = [r for r in gathered if r is not None]
+
+    # Filter: keep only items with score >= 2
+    high_score_results = [r for r in all_results if r.get("score_value", 0) >= 2]
+
+    print(f"\n{'='*80}")
+    print(f"✅ Deep Validation Completed")
+    print(f"Total results: {len(all_results)} | Score >= 2: {len(high_score_results)}")
+    print(f"{'='*80}\n")
+
+    return high_score_results
+
+
+# -------------------------------------------------------
 # Routes
 # -------------------------------------------------------
 @router.get("/")
@@ -693,6 +755,38 @@ async def validate_query(request: ValidatorRequest):
         )
         
         
+@router.post("/deep_validation")
+async def deep_validation(request: ValidatorRequest):
+    """Deep validation endpoint - runs the full research pipeline synchronously
+    and returns JSON results only for items with score >= 2."""
+    print(f"\n{'='*80}")
+    print("🔬 Deep Validation Request Received")
+    print(f"{'='*80}")
+    print(f"Query: {request.query}")
+    print(f"Reference: {request.reference}")
+    print(f"{'='*80}\n")
+
+    try:
+        high_score_results = await process_deep_validation(
+            query=request.query,
+            reference=request.reference,
+        )
+
+        return {
+            "query": request.query,
+            "reference": request.reference,
+            "count": len(high_score_results),
+            "results": high_score_results,
+        }
+
+    except Exception as e:
+        print(f"❌ Deep Validation Error: {str(e)}\n")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during deep validation: {str(e)}",
+        )
+
+
 @router.get("/saved-queries")
 async def get_saved_queries():
     """Return all non-expired saved queries."""
