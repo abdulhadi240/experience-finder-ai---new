@@ -1,176 +1,306 @@
-from queue import Full
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.encoders import jsonable_encoder
-from agents import Runner
+import asyncio
 import json
 import time
-import requests
+import httpx
 from typing import AsyncGenerator, Dict, Any
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from agents import Runner
+
 from .schemas import QueryRequest, UserCreateRequest
-from .services import generate_stream, get_complete_response, get_complete_response_explore
-from .agents_ import validation_agent, explore_travel_agent
-from .memory import delete_user, create_new_user
-from .memory import check_user, get_message, add_message
+from .services import (
+    get_complete_response,
+    stream_agent_to_queue,
+    generate_loading_statements,
+    get_loading_message,
+    _STAGE_TIMINGS_MS,
+)
+from .agents_ import validation_agent
+from .memory import delete_user, create_new_user, check_user, add_message
 
 router = APIRouter()
 
 
-# ─── RAG Function ───────────────────────────────────────────────
+# ─── RAG Helper ──────────────────────────────────────────────────
 
-def rag(query: str, reference: str) -> Dict[str, Any]:
-    """Send a query to the webhook for RAG processing."""
-    
+# Module-level shared client — one connection pool reused across all requests.
+# httpx.AsyncClient is fully async: no threads consumed, scales to thousands of
+# concurrent requests without exhausting any thread pool.
+_rag_client = httpx.AsyncClient(timeout=30.0)
+
+async def rag(query: str, reference: str) -> Dict[str, Any]:
+    """Async RAG call. Uses the shared httpx client — zero thread usage."""
     if not query or not query.strip():
         raise ValueError("Query cannot be empty or None")
-    
-    url = "https://rag.hiptraveler.com/chat"
-    
-    payload = {
-        "query": query.strip(),
-        "reference": reference
-    }
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    
+
+    payload = {"query": query.strip(), "reference": reference}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
     try:
-        response = requests.post(
-            url=url,
+        response = await _rag_client.post(
+            url="https://rag.hiptraveler.com/chat",
             json=payload,
             headers=headers,
-            timeout=30
         )
         response.raise_for_status()
         print("RAG Response:", response.json())
-        
         try:
             return response.json()
         except json.JSONDecodeError:
-            return {
-                "success": True,
-                "data": response.text,
-                "status_code": response.status_code
-            }
-            
-    except requests.exceptions.Timeout:
-        raise requests.exceptions.RequestException("Request timed out after 30 seconds")
-    except requests.exceptions.ConnectionError:
-        raise requests.exceptions.RequestException("Failed to connect to the webhook")
-    except requests.exceptions.HTTPError as e:
-        raise requests.exceptions.RequestException(f"HTTP error occurred: {e}")
-    except requests.exceptions.RequestException as e:
-        raise requests.exceptions.RequestException(f"Request failed: {e}")
+            return {"success": True, "data": response.text, "status_code": response.status_code}
+
+    except httpx.TimeoutException:
+        raise Exception("RAG request timed out after 30 seconds")
+    except httpx.ConnectError:
+        raise Exception("Failed to connect to RAG webhook")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"RAG HTTP error: {e}")
 
 
-def get_rag_note_stream_response(note: str, thread_id: str, param: str):
-    """Stream the RAG note response when no chunks are found."""
-    async def note_stream_generator() -> AsyncGenerator[str, None]:
-        start_time = time.time()
-        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+# ─── Pipeline Decision (RAG + validation only, no agent call) ────
 
-        first_chunk_time = time.time()
-        ttfb = first_chunk_time - start_time
-        yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
+async def run_pipeline_decision(request: QueryRequest) -> dict:
+    """
+    Runs RAG (non-blocking) → validation → routing decision.
 
-        # Stream the note as JSON wrapper word by word (same format as your error stream)
+    For the streaming path it returns ROUTING INFO only — the agent is NOT
+    called here.  The caller starts the agent separately so it can interrupt
+    loading messages the moment the first token arrives.
+
+    For non-streaming paths (trip planning, error, rag-note) the full result
+    is produced here so loading covers the entire wait.
+    """
+    thread_id     = check_user(request.user_id)
+    param         = request.param
+    final_message = build_conversation_context(request)
+
+    # RAG — fully async via httpx, no thread pool needed
+    try:
+        rag_response = await rag(query=request.message, reference=request.reference)
+        note = rag_response.get("note", "")
+    except Exception as e:
+        print(f"RAG failed, falling back: {e}")
+        note = ""
+
+    # Scoped-note short-circuit
+    if "This portal is scoped to" in note and "Please ask about that destination" in note:
+        return {"type": "rag_note", "note": note, "thread_id": thread_id, "param": param}
+
+    # Validation
+    print("validation")
+    validation_result = await Runner.run(validation_agent, final_message)
+    print("validation_result:", validation_result.final_output)
+
+    if not validation_result.final_output.isValid:
+        return {
+            "type": "error",
+            "reason": validation_result.final_output.reason,
+            "solution": validation_result.final_output.solution,
+            "thread_id": thread_id,
+            "param": param,
+        }
+
+    final_message_with_ref = final_message + "\n\nReference : " + request.reference
+
+    if validation_result.final_output.isTravelRelated:
+        # Trip planning: run the full agent here; loading covers the entire wait
+        response_content, timing_info = await get_complete_response(final_message, thread_id, param)
+        return {
+            "type": "non_streaming",
+            "data": jsonable_encoder(response_content),
+            "thread_id": thread_id,
+            "param": param,
+            "timing_info": timing_info,
+        }
+
+    # Streaming path: return routing info only — agent starts in chat_stream_generator
+    return {
+        "type": "streaming",
+        "agent_name": "general_agent" if param == "plan" else "explore_agent",
+        "final_message_with_ref": final_message_with_ref,
+        "thread_id": thread_id,
+        "param": param,
+    }
+
+
+# ─── Unified SSE Generator ────────────────────────────────────────
+
+async def chat_stream_generator(request: QueryRequest) -> AsyncGenerator[str, None]:
+
+    start_time = time.time()
+    param      = request.param
+
+    # ── t=0: signal receipt — zero latency ──────────────────────
+    yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+
+    # ── Two concurrent tasks fire immediately ────────────────────
+    statements_task = asyncio.create_task(generate_loading_statements(request.message, param))
+    decision_task   = asyncio.create_task(run_pipeline_decision(request))
+
+    stage_index = 0
+    loop_start  = time.time()
+    statements  = []   # filled once statements_task completes
+
+    # ── PHASE 1: loading while pipeline decision runs ────────────
+    while not decision_task.done():
+        elapsed_ms = (time.time() - loop_start) * 1000
+
+        if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
+            if not statements and statements_task.done():
+                try:
+                    statements = statements_task.result()
+                except Exception:
+                    statements = []
+
+            msg = (
+                statements[stage_index]
+                if statements and stage_index < len(statements)
+                else get_loading_message(stage_index, None, param)
+            )
+            yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
+            stage_index += 1
+
+        await asyncio.sleep(0.1)
+
+    # ── Retrieve decision ────────────────────────────────────────
+    try:
+        result = decision_task.result()
+    except Exception as e:
+        if not statements_task.done():
+            statements_task.cancel()
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
+        return
+
+    r_type    = result["type"]
+    thread_id = result.get("thread_id", "")
+
+    # ── PHASE 2 (streaming path only) ───────────────────────────
+    if r_type == "streaming":
+        token_queue = asyncio.Queue()
+
+        # Start agent — tokens land in queue as they arrive
+        asyncio.create_task(
+            stream_agent_to_queue(
+                agent_name             = result["agent_name"],
+                final_message_with_ref = result["final_message_with_ref"],
+                original_message       = request.message,
+                thread_id              = thread_id,
+                queue                  = token_queue,
+            )
+        )
+
+        first_token = False
+
+        while True:
+            # ── Non-blocking queue poll ──────────────────────────
+            try:
+                token = token_queue.get_nowait()
+
+                if token is None:                       # sentinel — stream complete
+                    break
+                if isinstance(token, Exception):
+                    yield f"data: {json.dumps({'error': str(token)})}\n\n"
+                    break
+
+                # First token arrived → interrupt loading immediately
+                if not first_token:
+                    first_token = True
+                    ttfb = time.time() - start_time
+                    yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
+
+                yield f"data: {json.dumps({'content': token})}\n\n"
+
+            except asyncio.QueueEmpty:
+                # No token yet — advance loading stages while waiting
+                if not first_token:
+                    elapsed_ms = (time.time() - loop_start) * 1000
+                    if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
+                        if not statements and statements_task.done():
+                            try:
+                                statements = statements_task.result()
+                            except Exception:
+                                statements = []
+
+                        msg = (
+                            statements[stage_index]
+                            if statements and stage_index < len(statements)
+                            else get_loading_message(stage_index, None, param)
+                        )
+                        yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
+                        stage_index += 1
+
+                # 50 ms poll — keeps interrupt latency low
+                await asyncio.sleep(0.05)
+
+    # ── Non-streaming / error / rag-note responses ───────────────
+    elif r_type == "rag_note":
+        note = result["note"]
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
-
-        words = note.split(" ")
-        for i, word in enumerate(words):
+        for i, word in enumerate(note.split()):
             chunk = word if i == 0 else f" {word}"
             yield f"data: {json.dumps({'content': chunk})}\n\n"
-
         yield f"data: {json.dumps({'content': '\"}'})}\n\n"
 
-        end_time = time.time()
-        yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'rag_streaming'})}\n\n"
+    elif r_type == "error":
+        solution = result["solution"]
+        if len(solution) < 50:
+            for chunk in [
+                '{"', "answer", '":"',
+                "Let", "'s", " keep", " it", " travel", "-focused", ".\n\n",
+                "What", " would", " you", " like", " to", " explore", " next", "?",
+                '"}',
+            ]:
+                if chunk:
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+        else:
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+            for i, word in enumerate(solution.split()):
+                chunk = word if i == 0 else f" {word}"
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
 
-    return StreamingResponse(
-        note_stream_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    )
+    elif r_type == "non_streaming":
+        yield f"data: {json.dumps({'response': result['data'], 'type': 'non-streaming', 'threadId': thread_id, 'param': result['param']})}\n\n"
+
+    # ── Cleanup + done event ─────────────────────────────────────
+    if not statements_task.done():
+        statements_task.cancel()
+
+    end_time     = time.time()
+    done_payload = {
+        "done":          True,
+        "total_time":    end_time - start_time,
+        "threadId":      thread_id,
+        "param":         param,
+        "response_type": r_type,
+    }
+    if r_type == "error":
+        done_payload["blocked"] = True
+    if r_type == "non_streaming" and "timing_info" in result:
+        done_payload.update(result["timing_info"])
+
+    yield f"data: {json.dumps(done_payload)}\n\n"
 
 
-# ─── Main Chat Route ────────────────────────────────────────────
+# ─── Main Chat Route ──────────────────────────────────────────────
 
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
-    try:
-        # Step 1: User and Thread setup
-        thread_id = check_user(request.user_id)
-        param = request.param
-
-        # Step 2: Build conversation context
-        final_message_with_current = build_conversation_context(request)
-        print(final_message_with_current)
-
-        # Step 3: Ask RAG first (applies to ALL modes)
-        try:
-            rag_response = rag(query=request.message, reference=request.reference)
-            chunks = rag_response.get("chunks", [])
-            audience = rag_response.get("audience", [])
-            travel_style = rag_response.get("travel_style", [])
-            note = rag_response.get("note", "")
-        except Exception as e:
-            print(f"RAG failed, falling back to agent: {e}")
-            chunks = ["fallback"]
-            audience = []
-            travel_style = []
-            note = ""
-
-        # Step 4: RAG has no useful data — stream the note back
-        rag_has_data = bool(chunks or audience or travel_style)
-        is_scoped_note = "This portal is scoped to" in note and "Please ask about that destination" in note
-
-        if is_scoped_note:
-            return get_rag_note_stream_response(note, thread_id, param)
-
-        # Step 5: RAG is good — proceed with validation
-        print("validation")
-        validation_result = await Runner.run(validation_agent, final_message_with_current)
-        print("validation_result:", validation_result.final_output)
-
-        # Step 6: Check Validity
-        if not validation_result.final_output.isValid:
-            return get_error_stream_response(
-                validation_result.final_output.reason,
-                validation_result.final_output.solution
-            )
-
-        # Step 7: Route based on travel relevance
-        if validation_result.final_output.isTravelRelated:
-            response_content = await get_complete_response(
-                final_message_with_current, thread_id, param
-            )
-            return JSONResponse(content={
-                "response": jsonable_encoder(response_content),
-                "type": "non-streaming"
-            })
-        else:
-            agent = 'general_agent' if param == 'plan' else 'explore_agent'
-            print("Stream")
-            return StreamingResponse(
-                generate_stream(
-                    request.message, thread_id, request.reference,
-                    agent, final_message_with_current
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-            )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(
+        chat_stream_generator(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
-# ─── Helper Functions (unchanged) ───────────────────────────────
+# ─── Helper Functions ─────────────────────────────────────────────
 
 def clean_answer(answer: str) -> str:
     """Remove POI metadata block (between $$$$$) from answer."""
-    return answer.split('$$$$$')[0].strip()
+    return answer.split("$$$$$")[0].strip()
 
 
 def build_conversation_context(request: QueryRequest) -> str:
@@ -181,79 +311,41 @@ def build_conversation_context(request: QueryRequest) -> str:
     recent = request.old_interactions[:3]
 
     if len(recent) >= 3:
-        last = recent[0]
+        old      = recent[2]
         previous = recent[1]
-        old = recent[2]
-
-        old_conversation = f"User: {old.question}\nAssistant: {clean_answer(old.answer)}"
-        previous_conversation = f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
-        last_conversation = f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        last     = recent[0]
         return (
-            f"Previous conversations:\n{old_conversation}\n\n"
-            f"{previous_conversation}\n\n"
-            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
+            f"Previous conversations:\n"
+            f"User: {old.question}\nAssistant: {clean_answer(old.answer)}\n\n"
+            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}\n\n"
+            f"Last conversation:\n"
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
+            f" (this is the continuation of the conversation)\n\n"
             f"User asked: {request.message}"
         )
     elif len(recent) == 2:
-        last = recent[0]
         previous = recent[1]
-        previous_conversation = f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}"
-        last_conversation = f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
+        last     = recent[0]
         return (
-            f"Previous conversation:\n{previous_conversation}\n\n"
-            f"Last conversation:\n{last_conversation}\n\n (this is the continuation of the conversation)\n\n"
+            f"Previous conversation:\n"
+            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}\n\n"
+            f"Last conversation:\n"
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
+            f" (this is the continuation of the conversation)\n\n"
             f"User asked: {request.message}"
         )
     elif len(recent) == 1:
         last = recent[0]
-        last_conversation = f"User: {last.question}\nAssistant: {clean_answer(last.answer)}"
         return (
-            f"Last conversation (this is the continuation of the conversation):\n{last_conversation}\n\n"
+            f"Last conversation (this is the continuation of the conversation):\n"
+            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
             f"New question asked: {request.message}"
         )
 
     return request.message
 
 
-def get_error_stream_response(reason: str, solution: str):
-    """Generate a streaming error response for invalid/non-travel queries."""
-    async def error_stream_generator() -> AsyncGenerator[str, None]:
-        start_time = time.time()
-        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
-
-        first_chunk_time = time.time()
-        ttfb = first_chunk_time - start_time
-        yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
-
-        if len(solution) < 50:
-            chunks = [
-                '{"', "answer", '":"',
-                "Let", "'s", " keep", " it", " travel", "-focused", " ✨", ".\n\n",
-                "I", " can", " help", " you", " explore", " destinations", ",",
-                " discover", " experiences", ",", " and", " plan", " your", " trip", ".\n\n",
-                "What", " would", " you", " like", " to", " explore", " next", "?",
-                '"}', ""
-            ]
-            for chunk in chunks:
-                if chunk:
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
-        else:
-            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n"
-            words = solution.split(" ")
-            for i, word in enumerate(words):
-                chunk = word if i == 0 else f" {word}"
-                yield f"data: {json.dumps({'content': chunk})}\n"
-            yield f"data: {json.dumps({'content': '\"}'})}\n"
-
-        end_time = time.time()
-        yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'blocked': True})}\n\n"
-
-    return StreamingResponse(
-        error_stream_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    )
-
+# ─── User Management Routes ───────────────────────────────────────
 
 @router.get("/delete_user")
 async def delete_user_route(user_id: int = Query(..., description="The ID of the user to delete")):
@@ -263,6 +355,7 @@ async def delete_user_route(user_id: int = Query(..., description="The ID of the
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.post("/create_user")
 async def create_user_route(user: UserCreateRequest):
     try:
@@ -270,11 +363,12 @@ async def create_user_route(user: UserCreateRequest):
             user_id=user.user_id,
             email=user.email,
             first_name=user.first_name,
-            last_name=user.last_name
+            last_name=user.last_name,
         )
         return {"message": "User created successfully", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/health")
 async def health_check():
