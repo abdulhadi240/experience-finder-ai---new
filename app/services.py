@@ -51,12 +51,12 @@ async def generate_stream(message: str, thread_id: str , reference: str , agent:
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
     
-    finally:
+    #finally:
         # Add the assistant's response to memory after the streaming is complete
-        if thread_id and full_response_content:
-            async def save_message():
-                add_message(role='assistant', thread_id=thread_id, message=full_response_content)
-            asyncio.create_task(save_message())
+        #if thread_id and full_response_content:
+            #async def save_message():
+                #add_message(role='assistant', thread_id=thread_id, message=full_response_content)
+            #asyncio.create_task(save_message())
 
 async def get_complete_response(message: str, thread_id: str , mode: str) -> tuple[str, dict]:
     """Generates a complete, non-streamed response and provides timing info."""
@@ -67,7 +67,7 @@ async def get_complete_response(message: str, thread_id: str , mode: str) -> tup
         
         # Access the actual response data
         full_response = result.final_output  
-        add_message(role='assistant', thread_id=thread_id, message=full_response) 
+        #add_message(role='assistant', thread_id=thread_id, message=full_response) 
         
         end_time = time.time()
         total_time = end_time - start_time
@@ -97,7 +97,7 @@ async def get_complete_response_explore(message: str, thread_id: str , mode: str
         
         # Access the actual response data
         full_response = result.final_output  
-        add_message(role='assistant', thread_id=thread_id, message=full_response) 
+        #add_message(role='assistant', thread_id=thread_id, message=full_response) 
         
         end_time = time.time()
         total_time = end_time - start_time

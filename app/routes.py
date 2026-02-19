@@ -124,10 +124,10 @@ async def unified_chat(request: QueryRequest):
 
         # Step 4: RAG has no useful data — stream the note back
         rag_has_data = bool(chunks or audience or travel_style)
-        rag_country_detected = "Answer retrieved for detected country" in note
+        rag_country_detected = "Answer retrieved" in note
 
         if not rag_has_data and not rag_country_detected and note:
-            add_message(role='assistant', thread_id=thread_id, message=note)
+            #add_message(role='assistant', thread_id=thread_id, message=note)
             return get_rag_note_stream_response(note, thread_id, param)
 
         # Step 5: RAG is good — proceed with validation
