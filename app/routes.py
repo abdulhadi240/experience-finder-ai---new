@@ -247,11 +247,15 @@ async def unified_chat(request: QueryRequest):
             response_content, timing_info = await get_complete_response(
                 final_message, thread_id, param
             )
+            
+            # This is where we combine them into the array you want
             return JSONResponse(content={
-                "response": jsonable_encoder(response_content),
+                "response": [
+                    jsonable_encoder(response_content),
+                    jsonable_encoder(timing_info)
+                ],
                 "type": "non-streaming",
             })
-
         # isTravelRelated=False → streaming with loading messages
         agent_name = "general_agent" if param == "plan" else "explore_agent"
 
