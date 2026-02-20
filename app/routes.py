@@ -251,6 +251,15 @@ async def unified_chat(request: QueryRequest):
                 validation_result.final_output.solution,
             )
 
+        # Inject RAG data for streaming agents — skips duplicate tool call inside agent
+        rag_data = {}
+        if not isinstance(rag_result, Exception):
+            rag_data = {
+                k: rag_result.get(k, [])
+                for k in ("entities", "chunks", "audience", "travel_style")
+                if rag_result.get(k)
+            }
+
         final_message_with_ref = final_message + "\n\nReference : " + request.reference
 
         # isTravelRelated=True → original JSON response, no loading messages
@@ -267,6 +276,9 @@ async def unified_chat(request: QueryRequest):
             })
 
         # isTravelRelated=False → streaming with loading messages
+        if rag_data:
+            final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
+
         agent_name = "general_agent" if param == "plan" else "explore_agent"
 
         return StreamingResponse(
