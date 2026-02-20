@@ -15,6 +15,7 @@ from .services import (
     stream_agent_to_queue,
     generate_loading_statements,
     get_loading_message,
+    get_instant_loading_message,
     _STAGE_TIMINGS_MS,
 )
 from .agents_ import validation_agent
@@ -86,6 +87,9 @@ async def streaming_with_loading(
 
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
+    # Instant first loading message — static pool, fires at t=0 with zero wait
+    yield f"data: {json.dumps({'type': 'loading', 'message': get_instant_loading_message(param)})}\n\n"
+
     # Both tasks start at t=0 — zero added latency
     statements_task = asyncio.create_task(generate_loading_statements(context, param))
 
@@ -100,7 +104,7 @@ async def streaming_with_loading(
         )
     )
 
-    stage_index = 0
+    stage_index = 1  # stage 0 already fired instantly above
     loop_start  = time.time()
     statements  = []
     first_token = False
@@ -214,13 +218,19 @@ async def unified_chat(request: QueryRequest):
         param         = request.param
         final_message = build_conversation_context(request)
 
-        # RAG
-        try:
-            rag_response = await rag(query=request.message, reference=request.reference)
-            note         = rag_response.get("note", "")
-        except Exception as e:
-            print(f"RAG failed, falling back: {e}")
+        # RAG + Validation run in parallel — saves 3-4 s vs sequential
+        rag_result, validation_result = await asyncio.gather(
+            rag(query=request.message, reference=request.reference),
+            Runner.run(validation_agent, final_message),
+            return_exceptions=True,
+        )
+
+        # ── RAG result ──────────────────────────────────────────────
+        if isinstance(rag_result, Exception):
+            print(f"RAG failed, falling back: {rag_result}")
             note = ""
+        else:
+            note = rag_result.get("note", "")
 
         is_scoped_note = (
             "This portal is scoped to" in note
@@ -229,9 +239,10 @@ async def unified_chat(request: QueryRequest):
         if is_scoped_note:
             return get_rag_note_stream_response(note, thread_id, param)
 
-        # Validation
-        print("validation")
-        validation_result = await Runner.run(validation_agent, final_message)
+        # ── Validation result (RAG succeeded — safe to proceed) ─────
+        if isinstance(validation_result, Exception):
+            raise validation_result
+
         print("validation_result:", validation_result.final_output)
 
         if not validation_result.final_output.isValid:
@@ -247,8 +258,6 @@ async def unified_chat(request: QueryRequest):
             response_content, timing_info = await get_complete_response(
                 final_message, thread_id, param
             )
-            
-            # This is where we combine them into the array you want
             return JSONResponse(content={
                 "response": [
                     jsonable_encoder(response_content),
@@ -256,6 +265,7 @@ async def unified_chat(request: QueryRequest):
                 ],
                 "type": "non-streaming",
             })
+
         # isTravelRelated=False → streaming with loading messages
         agent_name = "general_agent" if param == "plan" else "explore_agent"
 

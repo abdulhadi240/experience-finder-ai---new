@@ -62,6 +62,31 @@ async def generate_loading_statements(message: str, param: str) -> list:
     return []
 
 
+# ─── Instant First Loading Statement (fires at t=0) ──────────────
+
+_INSTANT_STATEMENTS = {
+    'explore': [
+        "On it — one sec…",
+        "Let me check that for you…",
+        "Looking into this now…",
+        "Right on it…",
+        "Give me a moment…",
+    ],
+    'plan': [
+        "On it — one sec…",
+        "Great question — checking that now…",
+        "Smart move — let me look into that…",
+        "Right, let me pull that up…",
+        "Give me just a moment…",
+    ],
+}
+
+
+def get_instant_loading_message(param: str) -> str:
+    mode = 'plan' if param == 'plan' else 'explore'
+    return random.choice(_INSTANT_STATEMENTS[mode])
+
+
 # ─── Loading Message Pools ───────────────────────────────────────
 
 _LOADING_STAGES = {
