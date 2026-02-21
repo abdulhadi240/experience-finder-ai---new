@@ -299,7 +299,7 @@ async def _main_stream(
 
     final_message_with_ref += "\n\n[INSTRUCTION] Begin your response with one short natural sentence that introduces the recommendations (e.g. 'Here are the best things to do in Tokyo:' or 'A few great spots to check out in Rome:'). Make it specific to the query. Then continue with your list. [/INSTRUCTION]"
 
-    agent_name = "general_agent" if param == "plan" else "explore_agent"
+    agent_name = "rag_format_agent" if rag_data else "web_search_agent"
 
     token_queue = asyncio.Queue()
     asyncio.create_task(

@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from openai import AsyncOpenAI
 from agents import Runner
 from openai.types.responses import ResponseTextDeltaEvent
-from .agents_ import general_agent , trip_planning_agent , explore_agent # Import the configured agents
+from .agents_ import general_agent, trip_planning_agent, explore_agent, rag_format_agent, web_search_agent
 from .config import settings
 from .memory import check_user, add_message, get_message
 from .tools import research_further
@@ -225,7 +225,11 @@ async def stream_agent_to_queue(
         add_message(role='user', thread_id=thread_id, message=original_message)
         research_further(final_message_with_ref)
 
-        if agent_name == 'general_agent':
+        if agent_name == 'rag_format_agent':
+            result = Runner.run_streamed(rag_format_agent, final_message_with_ref)
+        elif agent_name == 'web_search_agent':
+            result = Runner.run_streamed(web_search_agent, final_message_with_ref)
+        elif agent_name == 'general_agent':
             result = Runner.run_streamed(general_agent, final_message_with_ref)
         else:
             result = Runner.run_streamed(explore_agent, final_message_with_ref)
