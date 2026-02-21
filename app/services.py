@@ -1,5 +1,6 @@
 # app/services.py
 import json
+import re
 import time
 import asyncio
 import random
@@ -266,11 +267,11 @@ async def stream_agent_to_queue(
         else:
             result = Runner.run_streamed(explore_agent, final_message_with_ref)
 
-        # Strip the {"answer":"..."} JSON wrapper so agent tokens are plain text,
-        # identical in format to the starter LLM tokens.
-        _PREFIX    = '{"answer":"'
-        _SUFFIX    = '"}'
-        prefix_buf = ""
+        # Strip the {"answer":"..."} JSON wrapper — handles compact and pretty-printed JSON.
+        # Regex matches: { optional whitespace "answer" optional whitespace : optional whitespace "
+        _PREFIX_RE  = re.compile(r'\{\s*"answer"\s*:\s*"')
+        _SUFFIX_LEN = 10   # buffer enough chars to catch any trailing "\n  \n}" variant
+        prefix_buf  = ""
         prefix_done = False
         suffix_buf  = ""
 
@@ -283,31 +284,34 @@ async def stream_agent_to_queue(
                 # ── Strip prefix ────────────────────────────────────
                 if not prefix_done:
                     prefix_buf += chunk
-                    if _PREFIX in prefix_buf:
+                    m = _PREFIX_RE.search(prefix_buf)
+                    if m:
                         prefix_done = True
-                        chunk = prefix_buf[prefix_buf.index(_PREFIX) + len(_PREFIX):]
+                        chunk = prefix_buf[m.end():]   # everything after the opening "
                         prefix_buf = ""
                         if not chunk:
                             continue
-                    elif len(prefix_buf) > len(_PREFIX) + 5:
-                        # no wrapper found — treat as plain text
+                    elif len(prefix_buf) > 40:
+                        # no JSON wrapper found after 40 chars — treat as plain text
                         prefix_done = True
                         chunk = prefix_buf
                         prefix_buf = ""
                     else:
                         continue
 
-                # ── Rolling suffix buffer to strip trailing "} ──────
+                # ── Rolling suffix buffer to strip trailing "} or "\n} ──
                 pending = suffix_buf + chunk
-                if len(pending) > len(_SUFFIX):
-                    await queue.put(pending[: -len(_SUFFIX)])
-                    suffix_buf = pending[-len(_SUFFIX):]
+                if len(pending) > _SUFFIX_LEN:
+                    await queue.put(pending[:-_SUFFIX_LEN])
+                    suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
 
-        # Flush suffix only if it isn't the JSON close
-        if suffix_buf and suffix_buf != _SUFFIX:
-            await queue.put(suffix_buf)
+        # Flush suffix — drop only if it's closing JSON, emit anything else
+        if suffix_buf:
+            cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
+            if cleaned:
+                await queue.put(cleaned)
 
     except Exception as e:
         await queue.put(e)          # consumer yields error event then breaks
