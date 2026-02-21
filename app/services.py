@@ -16,6 +16,38 @@ from .tools import research_further
 _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 
+# ─── RAG Query Summarizer ────────────────────────────────────────
+
+async def summarize_for_rag(message: str) -> str:
+    """
+    Ultra-fast gpt-4.1-nano call that converts the user message (which may
+    contain conversation history or pronouns like 'there'/'it') into a clean,
+    standalone search query for RAG.
+    Falls back to the original message on any failure.
+    """
+    try:
+        response = await _openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Convert the user message into a concise standalone search query "
+                        "for a travel database. Resolve any pronouns or references using context. "
+                        "Return ONLY the query, no explanation, no punctuation at the end."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            max_tokens=40,
+            temperature=0.0,
+        )
+        result = response.choices[0].message.content.strip()
+        return result if result else message
+    except Exception:
+        return message
+
+
 # ─── LLM-Generated Loading Statements ───────────────────────────
 
 async def generate_loading_statements(message: str, param: str) -> list:

@@ -15,6 +15,7 @@ from .services import (
     get_complete_response,
     stream_agent_to_queue,
     stream_starter_to_queue,
+    summarize_for_rag,
 )
 from .agents_ import validation_agent
 from .memory import delete_user, create_new_user, setup_user_session, add_message
@@ -209,8 +210,12 @@ async def _main_stream(
     await asyncio.sleep(0)   # yield once so starter task fires its HTTP call immediately
 
     # ── Fire remaining tasks in parallel ─────────────────────────
+    async def _summarize_then_rag() -> Dict[str, Any]:
+        query = await summarize_for_rag(final_message)
+        return await rag(query=query, reference=request.reference)
+
     zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id))
-    rag_task        = asyncio.create_task(rag(query=request.message, reference=request.reference))
+    rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
 
     # ── Phase 1: stream starter tokens immediately ────────────────
