@@ -10,7 +10,7 @@ client = Zep(api_key=settings.zep_api_key)
 def check_user(user_id: str):
     if not user_id:
         return None
-    
+
     try:
         # Try to get existing user first
         try:
@@ -20,19 +20,34 @@ def check_user(user_id: str):
             client.user.add(
                 user_id=user_id
             )
-        
+
         # Create thread for all users
         thread_id = uuid.uuid4().hex
         client.thread.create(
             thread_id=thread_id,
             user_id=user_id,
         )
-        
+
         return thread_id
-        
+
     except Exception as e:
         print(f"Error in check_user: {e}")
         return None
+
+
+def setup_user_session(user_id: str, thread_id: str) -> None:
+    """Create/verify user and thread in Zep using a pre-generated thread_id.
+    Designed to run in asyncio.to_thread so it never blocks the event loop."""
+    if not user_id:
+        return
+    try:
+        try:
+            client.user.get(user_id)
+        except:
+            client.user.add(user_id=user_id)
+        client.thread.create(thread_id=thread_id, user_id=user_id)
+    except Exception as e:
+        print(f"setup_user_session error: {e}")
 
     
 

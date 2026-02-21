@@ -2,14 +2,15 @@ import requests
 import json
 import sys
 
+
 def stream_chat_response():
     url = "http://localhost:8080/chat"
 
     payload = {
-        "message": "can i camp in deosai , skardu",
+        "message": "best things to do in bali",
         "user_id": "user12113",
         "reference": "hiptraveler",
-        "param": "plan",
+        "param": "explore",
         "threadId": ""
     }
 
@@ -28,81 +29,67 @@ def stream_chat_response():
 
             full_answer = ""
             thread_id   = None
-            in_answer   = False
 
             for line in response.iter_lines():
                 if not line:
                     continue
 
                 line_str = line.decode("utf-8")
-
                 if not line_str.startswith("data: "):
                     continue
 
-                data_str = line_str[6:]
-
                 try:
-                    data = json.loads(data_str)
+                    data = json.loads(line_str[6:])
                 except json.JSONDecodeError:
                     continue
 
-                # ── Started ──────────────────────────────────────
+                # ── Started ──────────────────────────────────────────
                 if "status" in data and data["status"] == "started":
                     thread_id = data.get("threadId", "")
                     print(f"[STARTED] thread={thread_id}")
 
-                # ── Loading stage message ─────────────────────────
-                elif data.get("type") == "loading":
-                    print(f"[LOADING] {data['message']}")
-
-                # ── TTFB ─────────────────────────────────────────
+                # ── TTFB (fires on starter's first token) ────────────
                 elif "time_to_first_byte" in data:
                     print(f"[TTFB]    {data['time_to_first_byte']:.2f}s")
                     print("-" * 80)
-                    print("[ANSWER]")
-                    in_answer = True
 
-                # ── Streaming content chunks ──────────────────────
+                # ── Streaming content (starter + agent, same format) ──
                 elif "content" in data:
                     chunk = data["content"]
-
-                    # Strip JSON wrapper fragments {"answer":" and "}
-                    # that the backend emits for some response types
-                    if not in_answer:
-                        in_answer = True
-                        print("[ANSWER]")
-
-                    # Try to unwrap {"answer":"..."} if the entire
-                    # chunk is parseable JSON with an answer key
-                    try:
-                        parsed = json.loads(chunk)
-                        if isinstance(parsed, dict) and "answer" in parsed:
-                            chunk = parsed["answer"]
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-
                     full_answer += chunk
                     print(chunk, end="", flush=True)
 
-                # ── Non-streaming (trip planning) response ────────
-                elif "response" in data:
-                    print(f"\n[TRIP PLAN]\n{json.dumps(data['response'], indent=2)}")
+                # ── Non-streaming (trip planning) JSON response ───────
+                elif "travel" in data:
+                    trip_plan   = data["travel"][0]
+                    timing_info = data["travel"][1]
+                    print(f"\n[TRIP PLAN]")
+                    print(f"  destinations : {trip_plan.get('destinations')}")
+                    print(f"  numDays      : {trip_plan.get('numDays')}")
+                    print(f"  startDate    : {trip_plan.get('startDate')}")
+                    print(f"  month        : {trip_plan.get('month')}")
+                    print(f"  pax          : {trip_plan.get('pax')}")
+                    print(f"  travelStyle  : {trip_plan.get('travelStyle')}")
+                    print(f"  activities   : {trip_plan.get('activities')}")
+                    print(f"  feedback     : {trip_plan.get('feedback')}")
+                    print(f"  summary      : {trip_plan.get('summary')}")
+                    print(f"  total_time   : {timing_info.get('total_time')}")
 
-                # ── Error ─────────────────────────────────────────
+                # ── Error ─────────────────────────────────────────────
                 elif "error" in data:
                     print(f"\n[ERROR] {data['error']}")
 
-                # ── Done ──────────────────────────────────────────
-                elif data.get("done"):
+                # ── Done ──────────────────────────────────────────────
+                elif data.get("done") and "travel" not in data:
                     total = data.get("total_time", 0)
+                    blocked = " [BLOCKED]" if data.get("blocked") else ""
                     print(f"\n{'=' * 80}")
-                    print(f"[DONE] total={total:.2f}s  thread={thread_id}  chars={len(full_answer)}")
+                    print(f"[DONE]{blocked} total={total:.2f}s  thread={thread_id}  chars={len(full_answer)}")
                     print("=" * 80)
 
     except requests.exceptions.HTTPError as e:
         print(f"[HTTP ERROR]    {e}")
         print(f"[STATUS CODE]   {e.response.status_code}")
-        print(f"[HEADERS]       {dict(e.response.headers)}")
         print(f"[RESPONSE BODY] {repr(e.response.text)}")
         sys.exit(1)
     except requests.exceptions.RequestException as e:

@@ -164,6 +164,44 @@ def get_loading_message(stage: int, topic, param: str) -> str:
     return random.choice(generic)
 
 
+# ─── Human-sounding Starter → Queue Streamer ─────────────────────
+
+async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue) -> None:
+    """
+    Streams a 2–3 sentence human-sounding opener into the queue at t=0.
+    Runs in parallel with the main agent — gives the user instant real content
+    while the agent processes RAG and generates recommendations.
+    """
+    mode = "trip planning" if param == "plan" else "travel"
+    prompt = (
+        f"You're a well-travelled friend. Someone just asked you: \"{message}\"\n\n"
+        "Write a 2–3 sentence conversational intro. Rules:\n"
+        "- This is ONLY an intro — do NOT recommend any specific places, restaurants, activities, or things to do\n"
+        "- Do NOT tell the user what to visit, see, eat, or do — that comes later\n"
+        "- Just react warmly to the destination or topic, set the tone, share a general feeling about it\n"
+        "- Sound like a real person, casual and warm — like a text from a friend\n"
+        "- End on a complete thought with a period\n"
+        "- Never start with: Certainly, Great, Of course, Sure, Absolutely, As an AI, I'd be happy\n"
+        "- No bullet points, no lists, no markdown"
+    )
+    try:
+        stream = await _openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=80,
+            temperature=0.92,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                await queue.put(delta)
+    except Exception as e:
+        print(f"stream_starter_to_queue failed: {e}")
+    finally:
+        await queue.put(None)  # sentinel — always fired
+
+
 # ─── Agent → Queue Streamer ──────────────────────────────────────
 
 async def stream_agent_to_queue(
@@ -192,11 +230,48 @@ async def stream_agent_to_queue(
         else:
             result = Runner.run_streamed(explore_agent, final_message_with_ref)
 
+        # Strip the {"answer":"..."} JSON wrapper so agent tokens are plain text,
+        # identical in format to the starter LLM tokens.
+        _PREFIX    = '{"answer":"'
+        _SUFFIX    = '"}'
+        prefix_buf = ""
+        prefix_done = False
+        suffix_buf  = ""
+
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                 chunk = event.data.delta
-                if chunk:
-                    await queue.put(chunk)
+                if not chunk:
+                    continue
+
+                # ── Strip prefix ────────────────────────────────────
+                if not prefix_done:
+                    prefix_buf += chunk
+                    if _PREFIX in prefix_buf:
+                        prefix_done = True
+                        chunk = prefix_buf[prefix_buf.index(_PREFIX) + len(_PREFIX):]
+                        prefix_buf = ""
+                        if not chunk:
+                            continue
+                    elif len(prefix_buf) > len(_PREFIX) + 5:
+                        # no wrapper found — treat as plain text
+                        prefix_done = True
+                        chunk = prefix_buf
+                        prefix_buf = ""
+                    else:
+                        continue
+
+                # ── Rolling suffix buffer to strip trailing "} ──────
+                pending = suffix_buf + chunk
+                if len(pending) > len(_SUFFIX):
+                    await queue.put(pending[: -len(_SUFFIX)])
+                    suffix_buf = pending[-len(_SUFFIX):]
+                else:
+                    suffix_buf = pending
+
+        # Flush suffix only if it isn't the JSON close
+        if suffix_buf and suffix_buf != _SUFFIX:
+            await queue.put(suffix_buf)
 
     except Exception as e:
         await queue.put(e)          # consumer yields error event then breaks

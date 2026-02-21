@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import uuid
 import httpx
 from typing import AsyncGenerator, Dict, Any
 
@@ -13,13 +14,10 @@ from .schemas import QueryRequest, UserCreateRequest
 from .services import (
     get_complete_response,
     stream_agent_to_queue,
-    generate_loading_statements,
-    get_loading_message,
-    get_instant_loading_message,
-    _STAGE_TIMINGS_MS,
+    stream_starter_to_queue,
 )
 from .agents_ import validation_agent
-from .memory import delete_user, create_new_user, check_user, add_message
+from .memory import delete_user, create_new_user, setup_user_session, add_message
 
 router = APIRouter()
 
@@ -58,7 +56,7 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
         raise Exception(f"RAG HTTP error: {e}")
 
 
-# ─── Streaming-with-loading generator (isTravelRelated=False only) ──
+# ─── Streaming-with-starter generator (isTravelRelated=False only) ──
 
 async def streaming_with_loading(
     context: str,
@@ -71,29 +69,27 @@ async def streaming_with_loading(
     """
     SSE generator used only when isTravelRelated=False.
 
-    Two concurrent tasks start immediately:
-      • statements_task — gpt-4.1-nano generates 6 personalised loading messages
-                          from the full conversation context (history + destination).
-      • stream_agent_to_queue — agent tokens land in token_queue as they arrive.
+    Two tasks fire at t=0:
+      • stream_starter_to_queue — gpt-4.1-nano streams a 2-3 sentence human-sounding
+                                   opener immediately so the user sees real content at once.
+      • stream_agent_to_queue   — main agent runs in parallel, tokens land in token_queue.
 
-    Loading stages fire on a timer until the FIRST token arrives in the queue,
-    at which point loading stops immediately and tokens stream live (≤50 ms delay).
-
-    statements[0-2] used at stages 0-2 (0.5 s, 3 s, 6 s)
-    statements[3-5] used at stages 3-5 (10 s, 15 s, 20 s)
-    Static fallback pool used if LLM call not ready in time.
+    Phase 1: starter tokens stream to the client instantly (TTFB < 500ms).
+    Bridge:  if the agent hasn't produced its first token within 800ms of the starter
+             finishing, one loading stage fires to cover the gap.
+    Phase 2: main agent tokens stream seamlessly after the starter.
     """
     start_time = time.time()
 
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
-    # Instant first loading message — static pool, fires at t=0 with zero wait
-    yield f"data: {json.dumps({'type': 'loading', 'message': get_instant_loading_message(param)})}\n\n"
+    # Both fire at t=0 — zero added latency
+    starter_queue = asyncio.Queue()
+    token_queue   = asyncio.Queue()
 
-    # Both tasks start at t=0 — zero added latency
-    statements_task = asyncio.create_task(generate_loading_statements(context, param))
-
-    token_queue = asyncio.Queue()
+    asyncio.create_task(
+        stream_starter_to_queue(original_message, param, starter_queue)
+    )
     asyncio.create_task(
         stream_agent_to_queue(
             agent_name=agent_name,
@@ -104,54 +100,39 @@ async def streaming_with_loading(
         )
     )
 
-    stage_index = 1  # stage 0 already fired instantly above
-    loop_start  = time.time()
-    statements  = []
-    first_token = False
-
+    # ── Phase 1: stream starter tokens ───────────────────────────
+    ttfb_sent = False
     while True:
-        # Non-blocking poll for next agent token
-        try:
-            token = token_queue.get_nowait()
+        token = await starter_queue.get()
+        if token is None:
+            break
+        if not ttfb_sent:
+            ttfb_sent = True
+            yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        yield f"data: {json.dumps({'content': token})}\n\n"
 
-            if token is None:                       # sentinel — stream complete
-                break
-            if isinstance(token, Exception):
-                yield f"data: {json.dumps({'error': str(token)})}\n\n"
-                break
+    # ── Bridge: wait silently for first agent token ───────────────
+    while True:
+        token = await token_queue.get()
+        if token is None:
+            end_time = time.time()
+            yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'threadId': thread_id, 'param': param})}\n\n"
+            return
+        if isinstance(token, Exception):
+            yield f"data: {json.dumps({'error': str(token)})}\n\n"
+            return
+        yield f"data: {json.dumps({'content': token})}\n\n"
+        break
 
-            # First token → interrupt loading immediately
-            if not first_token:
-                first_token = True
-                ttfb = time.time() - start_time
-                yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
-
-            yield f"data: {json.dumps({'content': token})}\n\n"
-
-        except asyncio.QueueEmpty:
-            # No token yet — advance loading stages while waiting
-            if not first_token:
-                elapsed_ms = (time.time() - loop_start) * 1000
-
-                if stage_index < len(_STAGE_TIMINGS_MS) and elapsed_ms >= _STAGE_TIMINGS_MS[stage_index]:
-                    if not statements and statements_task.done():
-                        try:
-                            statements = statements_task.result()
-                        except Exception:
-                            statements = []
-
-                    msg = (
-                        statements[stage_index]
-                        if statements and stage_index < len(statements)
-                        else get_loading_message(stage_index, None, param)
-                    )
-                    yield f"data: {json.dumps({'type': 'loading', 'message': msg})}\n\n"
-                    stage_index += 1
-
-            await asyncio.sleep(0.05)
-
-    if not statements_task.done():
-        statements_task.cancel()
+    # ── Phase 2: stream main agent tokens ────────────────────────
+    while True:
+        token = await token_queue.get()
+        if token is None:
+            break
+        if isinstance(token, Exception):
+            yield f"data: {json.dumps({'error': str(token)})}\n\n"
+            break
+        yield f"data: {json.dumps({'content': token})}\n\n"
 
     end_time = time.time()
     yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time, 'threadId': thread_id, 'param': param})}\n\n"
@@ -209,91 +190,152 @@ def get_error_stream_response(reason: str, solution: str):
     )
 
 
+# ─── Main Stream Generator ────────────────────────────────────────
+
+async def _main_stream(
+    request: QueryRequest,
+    thread_id: str,
+    param: str,
+    final_message: str,
+) -> AsyncGenerator[str, None]:
+    start_time = time.time()
+
+    # ── t=0: client gets [STARTED] before any network calls ──────
+    yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
+
+    # ── Fire everything at t=0 in parallel ───────────────────────
+    starter_queue = asyncio.Queue()
+    asyncio.create_task(stream_starter_to_queue(request.message, param, starter_queue))
+
+    zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id))
+    rag_task        = asyncio.create_task(rag(query=request.message, reference=request.reference))
+    validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
+
+    # ── Phase 1: stream starter tokens immediately ────────────────
+    ttfb_sent = False
+    while True:
+        token = await starter_queue.get()
+        if token is None:
+            break
+        if not ttfb_sent:
+            ttfb_sent = True
+            yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        yield f"data: {json.dumps({'content': token})}\n\n"
+        await asyncio.sleep(0.08)   # throttle starter so main agent is ready by the time it ends
+
+    # ── Separator: blank line between starter paragraph and agent list ──
+    yield f"data: {json.dumps({'content': '\n\n'})}\n\n"
+
+    # ── Await both tasks (likely already done while starter was streaming) ──
+    try:
+        rag_result = await rag_task
+    except Exception as e:
+        rag_result = e
+
+    try:
+        validation_result = await validation_task
+    except Exception as e:
+        validation_result = e
+
+    # ── RAG check ────────────────────────────────────────────────
+    note = ""
+    if isinstance(rag_result, Exception):
+        print(f"RAG failed, falling back: {rag_result}")
+    else:
+        note = rag_result.get("note", "")
+
+    if "This portal is scoped to" in note and "Please ask about that destination" in note:
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        for i, word in enumerate(note.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'rag_note'})}\n\n"
+        return
+
+    # ── Validation check ─────────────────────────────────────────
+    if isinstance(validation_result, Exception):
+        yield f"data: {json.dumps({'error': str(validation_result)})}\n\n"
+        return
+
+    print("validation_result:", validation_result.final_output)
+
+    if not validation_result.final_output.isValid:
+        solution = validation_result.final_output.solution
+        if len(solution) < 50:
+            solution = "Let's keep it travel-focused. What would you like to explore next?"
+        for i, word in enumerate(solution.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'blocked': True})}\n\n"
+        return
+
+    # ── RAG injection for streaming agents ───────────────────────
+    rag_data = {}
+    if not isinstance(rag_result, Exception):
+        rag_data = {
+            k: rag_result.get(k, [])
+            for k in ("entities", "chunks", "audience", "travel_style")
+            if rag_result.get(k)
+        }
+
+    final_message_with_ref = final_message + "\n\nReference : " + request.reference
+
+    # ── Ensure Zep session is ready before agent calls add_message ──
+    await zep_task
+
+    # ── Trip planning (isTravelRelated=True) ─────────────────────
+    if validation_result.final_output.isTravelRelated:
+        try:
+            response_content, timing_info = await get_complete_response(final_message, thread_id, param)
+            yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        return
+
+    # ── Explore / General (isTravelRelated=False) ─────────────────
+    if rag_data:
+        final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
+
+    final_message_with_ref += "\n\n[INSTRUCTION] Begin your response with one short natural sentence that introduces the recommendations (e.g. 'Here are the best things to do in Tokyo:' or 'A few great spots to check out in Rome:'). Make it specific to the query. Then continue with your list. [/INSTRUCTION]"
+
+    agent_name = "general_agent" if param == "plan" else "explore_agent"
+
+    token_queue = asyncio.Queue()
+    asyncio.create_task(
+        stream_agent_to_queue(
+            agent_name=agent_name,
+            final_message_with_ref=final_message_with_ref,
+            original_message=request.message,
+            thread_id=thread_id,
+            queue=token_queue,
+        )
+    )
+
+    # ── Phase 2: stream main agent tokens ────────────────────────
+    while True:
+        token = await token_queue.get()
+        if token is None:
+            break
+        if isinstance(token, Exception):
+            yield f"data: {json.dumps({'error': str(token)})}\n\n"
+            break
+        yield f"data: {json.dumps({'content': token})}\n\n"
+
+    yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"
+
+
 # ─── Main Chat Route ──────────────────────────────────────────────
 
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
     try:
-        thread_id     = check_user(request.user_id)
+        thread_id     = uuid.uuid4().hex          # instant — no network call
         param         = request.param
         final_message = build_conversation_context(request)
 
-        # RAG + Validation run in parallel — saves 3-4 s vs sequential
-        rag_result, validation_result = await asyncio.gather(
-            rag(query=request.message, reference=request.reference),
-            Runner.run(validation_agent, final_message),
-            return_exceptions=True,
-        )
-
-        # ── RAG result ──────────────────────────────────────────────
-        if isinstance(rag_result, Exception):
-            print(f"RAG failed, falling back: {rag_result}")
-            note = ""
-        else:
-            note = rag_result.get("note", "")
-
-        is_scoped_note = (
-            "This portal is scoped to" in note
-            and "Please ask about that destination" in note
-        )
-        if is_scoped_note:
-            return get_rag_note_stream_response(note, thread_id, param)
-
-        # ── Validation result (RAG succeeded — safe to proceed) ─────
-        if isinstance(validation_result, Exception):
-            raise validation_result
-
-        print("validation_result:", validation_result.final_output)
-
-        if not validation_result.final_output.isValid:
-            return get_error_stream_response(
-                validation_result.final_output.reason,
-                validation_result.final_output.solution,
-            )
-
-        # Inject RAG data for streaming agents — skips duplicate tool call inside agent
-        rag_data = {}
-        if not isinstance(rag_result, Exception):
-            rag_data = {
-                k: rag_result.get(k, [])
-                for k in ("entities", "chunks", "audience", "travel_style")
-                if rag_result.get(k)
-            }
-
-        final_message_with_ref = final_message + "\n\nReference : " + request.reference
-
-        # isTravelRelated=True → original JSON response, no loading messages
-        if validation_result.final_output.isTravelRelated:
-            response_content, timing_info = await get_complete_response(
-                final_message, thread_id, param
-            )
-            return JSONResponse(content={
-                "response": [
-                    jsonable_encoder(response_content),
-                    jsonable_encoder(timing_info)
-                ],
-                "type": "non-streaming",
-            })
-
-        # isTravelRelated=False → streaming with loading messages
-        if rag_data:
-            final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
-
-        agent_name = "general_agent" if param == "plan" else "explore_agent"
-
         return StreamingResponse(
-            streaming_with_loading(
-                context=final_message,
-                agent_name=agent_name,
-                final_message_with_ref=final_message_with_ref,
-                original_message=request.message,
-                thread_id=thread_id,
-                param=param,
-            ),
+            _main_stream(request, thread_id, param, final_message),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
