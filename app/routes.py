@@ -203,10 +203,12 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
-    # ── Fire everything at t=0 in parallel ───────────────────────
+    # ── Fire starter first — give it a head-start before heavier tasks ──
     starter_queue = asyncio.Queue()
     asyncio.create_task(stream_starter_to_queue(request.message, param, starter_queue))
+    await asyncio.sleep(0)   # yield once so starter task fires its HTTP call immediately
 
+    # ── Fire remaining tasks in parallel ─────────────────────────
     zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id))
     rag_task        = asyncio.create_task(rag(query=request.message, reference=request.reference))
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
