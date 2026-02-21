@@ -220,6 +220,7 @@ async def _main_stream(
         if not ttfb_sent:
             ttfb_sent = True
             yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         yield f"data: {json.dumps({'content': token})}\n\n"
         await asyncio.sleep(0.08)   # throttle starter so main agent is ready by the time it ends
 
@@ -319,6 +320,7 @@ async def _main_stream(
             break
         yield f"data: {json.dumps({'content': token})}\n\n"
 
+    yield f"data: {json.dumps({'content': '\"}'})}\n\n"
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"
 
 
