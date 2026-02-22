@@ -445,7 +445,7 @@ Examples:
 Today's date is {{{{today}}}}
 """,
     output_type=global_input_guardrail,
-    model="gpt-4o",
+    model="gpt-5.2",
 )
 
 explore_travel_agent = Agent(
