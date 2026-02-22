@@ -251,7 +251,7 @@ async def _main_stream(
         # json.dumps(token)[1:-1] gives the JSON escape sequences without outer quotes
         # e.g. "it's" → it's  |  '"hello"' → \"hello\"  |  '\n' → \n
         yield f"data: {json.dumps({'content': json.dumps(token)[1:-1]})}\n\n"
-        await asyncio.sleep(0.10)   # throttle starter so main agent is ready by the time it ends
+        await asyncio.sleep(0.12)   # throttle starter so main agent is ready by the time it ends
 
     # ── Separator: use JSON-string newline escapes, not literal newlines ──
     # Literal '\n\n' would break JSON.parse on the frontend.

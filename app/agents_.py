@@ -152,12 +152,13 @@ trip_planning_agent = Agent(
 
     Generate the `summary` string following this strict pattern:
 
-    1. **Acknowledge:** Enthusiastically acknowledge the *newest* information provided (e.g., "China sounds amazing for your trip!").
-    2. **Pick ONE Question:** Look at your generated `feedback` list.
+    1. **ONE question only.** Look at your generated `feedback` list.
        * Take the **FIRST** item from that list (Index 0).
-       * Ask a friendly question *specifically* about that one item.
+       * Ask a short, friendly question *specifically* about that one item.
+       * **NO acknowledgment, NO lead-in, NO "Got it", NO destination mention** — just the question itself.
        * **DO NOT** ask for multiple things at once.
-    3. If `feedback` is empty, summarize the trip plan and confirm.
+       * Example: "When would you like to start your trip (MM-DD-YYYY)?" — NOT "Great choice! When would you like to start?"
+    2. If `feedback` is empty, output a single short confirmation sentence only.
 
     =====================================================================
     📅 DATE EXTRACTION RULES
@@ -216,7 +217,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["travelStyle", "activities"],
-      "summary": "San Francisco for 4 days sounds fantastic! What type of experiences are you looking for?"
+      "summary": "What type of experiences are you looking for?"
     }}
 
     **Example 2: User mentions Month only**
@@ -239,7 +240,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": [ "numDays", "startDate","pax", "travelStyle", "activities"],
-      "summary": "Paris in October — what a beautiful choice! How many travelers will be joining this trip?"
+      "summary": "How many travelers will be joining this trip?"
     }}
 
     **Example 3: User gives a day range and refuses dates**
@@ -266,7 +267,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": [],
-      "summary": "China with a luxury slow-travel vibe sounds incredible! What type of experiences are you looking for?"
+      "summary": "What type of experiences are you looking for?"
     }}
 
     **Example 4: User uses vague language only, no explicit number**
@@ -288,7 +289,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["numDays", "startDate", "travelStyle", "activities"],
-      "summary": "Japan is a wonderful choice! What type of experiences are you hoping for?"
+      "summary": "What type of experiences are you hoping for?"
     }}
 
     =====================================================================
