@@ -275,17 +275,6 @@ async def stream_agent_to_queue(
         prefix_done = False
         suffix_buf  = ""
 
-        def _clean(text: str) -> str:
-            """Unescape JSON string sequences inline — no latency cost."""
-            return (
-                text
-                .replace('\\"', '"')
-                .replace('\\n', '\n')
-                .replace('\\t', '\t')
-                .replace('\\r', '')
-                .replace('\\\\', '\\')
-            )
-
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                 chunk = event.data.delta
@@ -313,7 +302,7 @@ async def stream_agent_to_queue(
                 # ── Rolling suffix buffer to strip trailing "} or "\n} ──
                 pending = suffix_buf + chunk
                 if len(pending) > _SUFFIX_LEN:
-                    await queue.put(_clean(pending[:-_SUFFIX_LEN]))
+                    await queue.put(pending[:-_SUFFIX_LEN])
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
@@ -322,7 +311,7 @@ async def stream_agent_to_queue(
         if suffix_buf:
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             if cleaned:
-                await queue.put(_clean(cleaned))
+                await queue.put(cleaned)
 
     except Exception as e:
         await queue.put(e)          # consumer yields error event then breaks
