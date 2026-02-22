@@ -16,6 +16,7 @@ from .services import (
     stream_agent_to_queue,
     stream_starter_to_queue,
     summarize_for_rag,
+    check_pii_fast,
 )
 from .agents_ import validation_agent
 from .memory import delete_user, create_new_user, setup_user_session, add_message
@@ -204,10 +205,11 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
-    # ── Fire starter first — give it a head-start before heavier tasks ──
+    # ── Fire starter + light PII check simultaneously ────────────
     starter_queue = asyncio.Queue()
     asyncio.create_task(stream_starter_to_queue(request.message, param, starter_queue))
-    await asyncio.sleep(0)   # yield once so starter task fires its HTTP call immediately
+    pii_task = asyncio.create_task(check_pii_fast(request.message))
+    await asyncio.sleep(0)   # yield once so both HTTP calls go in-flight immediately
 
     # ── Fire remaining tasks in parallel ─────────────────────────
     async def _summarize_then_rag() -> Dict[str, Any]:
@@ -217,6 +219,22 @@ async def _main_stream(
     zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id))
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
+
+    # ── PII check — resolves in ~150-200ms, starter first token ~300ms ──
+    # Awaiting here adds zero real latency since starter hasn't produced a token yet
+    if await pii_task:
+        pii_message = (
+            "To keep your information safe, please avoid sharing personal details "
+            "like phone numbers, email addresses, or ID numbers in your messages. "
+            "Feel free to ask me anything about travel destinations and I'll be happy to help!"
+        )
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+        for i, word in enumerate(pii_message.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'blocked': True, 'total_time': time.time() - start_time, 'reason': 'PII_DETECTED'})}\n\n"
+        return
 
     # ── Phase 1: stream starter tokens immediately ────────────────
     ttfb_sent = False
@@ -229,7 +247,7 @@ async def _main_stream(
             yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
             yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         yield f"data: {json.dumps({'content': token})}\n\n"
-        await asyncio.sleep(0.08)   # throttle starter so main agent is ready by the time it ends
+        await asyncio.sleep(0.10)   # throttle starter so main agent is ready by the time it ends
 
     # ── Separator: blank line between starter paragraph and agent list ──
     yield f"data: {json.dumps({'content': '\n\n'})}\n\n"
@@ -272,6 +290,7 @@ async def _main_stream(
             solution = "Let's keep it travel-focused. What would you like to explore next?"
         for i, word in enumerate(solution.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
         yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'blocked': True})}\n\n"
         return
 

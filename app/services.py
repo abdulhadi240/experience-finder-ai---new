@@ -4,11 +4,10 @@ import re
 import time
 import asyncio
 import random
-from typing import AsyncGenerator
 from openai import AsyncOpenAI
 from agents import Runner
 from openai.types.responses import ResponseTextDeltaEvent
-from .agents_ import general_agent, trip_planning_agent, explore_agent, rag_format_agent, web_search_agent
+from .agents_ import trip_planning_agent, rag_format_agent, web_search_agent
 from .config import settings
 from .memory import check_user, add_message, get_message
 from .tools import research_further
@@ -199,30 +198,57 @@ def get_loading_message(stage: int, topic, param: str) -> str:
 
 # ─── Human-sounding Starter → Queue Streamer ─────────────────────
 
+async def check_pii_fast(message: str) -> bool:
+    """
+    Lightweight PII-only guardrail using gpt-4.1-nano.
+    Fires at t=0 in parallel with the starter — completes in ~150-200ms.
+    Returns True if PII is detected (block the response).
+    """
+    try:
+        response = await _openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a PII detector. Reply with exactly YES or NO.\n"
+                        "Reply YES if the message contains any: phone numbers, email addresses, "
+                        "physical addresses, passport or ID numbers, credit/debit card numbers, "
+                        "or social security numbers.\n"
+                        "Reply NO for everything else including names, cities, or travel queries."
+                    ),
+                },
+                {"role": "user", "content": message[:600]},
+            ],
+            max_tokens=3,
+            temperature=0.0,
+        )
+        result = response.choices[0].message.content.strip().upper()
+        return result.startswith("YES")
+    except Exception:
+        return False   # fail open — never block on error
+
+
 async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue) -> None:
     """
-    Streams a 2–3 sentence human-sounding opener into the queue at t=0.
+    Streams a 1–2 sentence human-sounding opener into the queue at t=0.
     Runs in parallel with the main agent — gives the user instant real content
     while the agent processes RAG and generates recommendations.
     """
-    mode = "trip planning" if param == "plan" else "travel"
     prompt = (
-        f"You're a well-travelled friend. Someone just asked you: \"{message}\"\n\n"
-        "Write a 2–3 sentence conversational intro. Rules:\n"
-        "- This is ONLY an intro — do NOT recommend any specific places, restaurants, activities, or things to do\n"
-        "- Do NOT tell the user what to visit, see, eat, or do — that comes later\n"
-        "- Just react warmly to the destination or topic, set the tone, share a general feeling about it\n"
-        "- Sound like a real person, casual and warm — like a text from a friend\n"
-        "- End on a complete thought with a period\n"
-        "- Never start with: Certainly, Great, Of course, Sure, Absolutely, As an AI, I'd be happy\n"
-        "- No bullet points, no lists, no markdown"
+        f"You're a well-travelled friend Your name is Hiptraveler. Someone just asked: \"{message}\"\n\n"
+        "Write 1–2 sentences MAX. Rules:\n"
+        "- React warmly to the destination or topic — no recommendations, no places, no lists\n"
+        "- Casual, direct, warm — like a quick text from a friend\n"
+        "- End with a period. Be brief.\n"
+        "- Never start with: Certainly, Great, Of course, Sure, Absolutely, As an AI"
     )
     try:
         stream = await _openai_client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
-            temperature=0.92,
+            max_tokens=100,
+            temperature=0.85,
             stream=True,
         )
         async for chunk in stream:
@@ -260,12 +286,8 @@ async def stream_agent_to_queue(
 
         if agent_name == 'rag_format_agent':
             result = Runner.run_streamed(rag_format_agent, final_message_with_ref)
-        elif agent_name == 'web_search_agent':
-            result = Runner.run_streamed(web_search_agent, final_message_with_ref)
-        elif agent_name == 'general_agent':
-            result = Runner.run_streamed(general_agent, final_message_with_ref)
         else:
-            result = Runner.run_streamed(explore_agent, final_message_with_ref)
+            result = Runner.run_streamed(web_search_agent, final_message_with_ref)
 
         # Strip the {"answer":"..."} JSON wrapper — handles compact and pretty-printed JSON.
         # Regex matches: { optional whitespace "answer" optional whitespace : optional whitespace "
@@ -318,55 +340,6 @@ async def stream_agent_to_queue(
     finally:
         await queue.put(None)       # sentinel — always fired
 
-async def generate_stream(message: str, thread_id: str , reference: str , agent: str , final_message: str) -> AsyncGenerator[str, None]:
-    """Generates a streaming response in Server-Sent Events (SSE) format."""
-    start_time = time.time()
-    first_chunk_time = None
-    full_response_content = ""
-    
-    try:
-        
-        add_message(role='user', thread_id=thread_id, message=message)
-        print("Stream Start")
-        # Append the latest message to final_message before sending to agent
-        final_message_with_current = final_message + "\n\n Reference : " + reference
-        print("Stream Start " + final_message_with_current)
-
-        research_further(final_message_with_current)
-        
-        if agent == 'general_agent':
-            result = Runner.run_streamed(general_agent, final_message_with_current)
-        else:
-            result = Runner.run_streamed(explore_agent, final_message_with_current)
-
-        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started' , 'threadId': thread_id})}\n\n"
-        
-        async for event in result.stream_events():
-            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                chunk = event.data.delta
-                if chunk:
-                    if first_chunk_time is None:
-                        first_chunk_time = time.time()
-                        ttfb = first_chunk_time - start_time
-                        yield f"data: {json.dumps({'time_to_first_byte': ttfb})}\n\n"
-                    
-                    # Accumulate the chunk for the full response
-                    full_response_content += chunk
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
-        
-        end_time = time.time()
-        yield f"data: {json.dumps({'done': True, 'total_time': end_time - start_time})}\n\n"
-
-    except Exception as e:
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-    
-    #finally:
-        # Add the assistant's response to memory after the streaming is complete
-        #if thread_id and full_response_content:
-            #async def save_message():
-                #add_message(role='assistant', thread_id=thread_id, message=full_response_content)
-            #asyncio.create_task(save_message())
-
 async def get_complete_response(message: str, thread_id: str , mode: str) -> tuple[str, dict]:
     """Generates a complete, non-streamed response and provides timing info."""
     start_time = time.time()
@@ -395,30 +368,3 @@ async def get_complete_response(message: str, thread_id: str , mode: str) -> tup
     
     
     
-async def get_complete_response_explore(message: str, thread_id: str , mode: str) -> tuple[str, dict]:
-    """Generates a complete, non-streamed response and provides timing info."""
-    research_further(message)
-    start_time = time.time()
-    
-    try:        
-        # Append the latest message to final_message before sending to agent    
-        result = await Runner.run(explore_planning_agent, message) 
-        
-        # Access the actual response data
-        full_response = result.final_output  
-        #add_message(role='assistant', thread_id=thread_id, message=full_response) 
-        
-        end_time = time.time()
-        total_time = end_time - start_time
-        
-        timing_info = {
-            "param" : mode,
-            "threadId":thread_id,
-            "total_time": f"{total_time:.2f} seconds",
-            "response_type": "non_streaming"
-        }    
-            
-        return full_response, timing_info
-
-    except Exception as e:
-        raise Exception(f"Agent error: {str(e)}") from e
