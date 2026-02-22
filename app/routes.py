@@ -207,7 +207,7 @@ async def _main_stream(
 
     # ── Fire starter + light PII check simultaneously ────────────
     starter_queue = asyncio.Queue()
-    asyncio.create_task(stream_starter_to_queue(request.message, param, starter_queue))
+    asyncio.create_task(stream_starter_to_queue(final_message, param, starter_queue))
     pii_task = asyncio.create_task(check_pii_fast(request.message))
     await asyncio.sleep(0)   # yield once so both HTTP calls go in-flight immediately
 
@@ -246,11 +246,17 @@ async def _main_stream(
             ttfb_sent = True
             yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
             yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
-        yield f"data: {json.dumps({'content': token})}\n\n"
+        # JSON-string-encode the token so the frontend can accumulate all chunks
+        # into a valid JSON string and call JSON.parse() at the end.
+        # json.dumps(token)[1:-1] gives the JSON escape sequences without outer quotes
+        # e.g. "it's" → it's  |  '"hello"' → \"hello\"  |  '\n' → \n
+        yield f"data: {json.dumps({'content': json.dumps(token)[1:-1]})}\n\n"
         await asyncio.sleep(0.10)   # throttle starter so main agent is ready by the time it ends
 
-    # ── Separator: blank line between starter paragraph and agent list ──
-    yield f"data: {json.dumps({'content': '\n\n'})}\n\n"
+    # ── Separator: use JSON-string newline escapes, not literal newlines ──
+    # Literal '\n\n' would break JSON.parse on the frontend.
+    # '\\n\\n' (Python: backslash-n x2) → wire: "\\n\\n" → frontend buffer: \n\n (valid JSON escapes)
+    yield f"data: {json.dumps({'content': '\\n\\n'})}\n\n"
 
     # ── Await both tasks (likely already done while starter was streaming) ──
     try:
