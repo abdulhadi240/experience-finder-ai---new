@@ -51,7 +51,7 @@ def setup_user_session(user_id: str, thread_id: str) -> None:
 
     
 
-def add_message(message: str , thread_id: str , role: str):
+def add_message(message: str, thread_id: str, role: str):
     messages = [
         Message(
             role=f"{role}",
@@ -71,32 +71,56 @@ def get_message(thread_id: str) -> str :
 
 def get_user_memory_for_engage(user_id: str) -> str:
     """
-    Retrieve the user's Zep graph node summary for re-engagement.
-    Returns the summary string, or empty string on failure.
+    Retrieve user's Zep node summary + last user question for re-engagement.
+    Returns combined string, or None on failure/not found.
     """
-    print(f"\n{'='*60}")
-    print(f"[ZEP ENGAGE] Fetching node summary for user: {user_id}")
-    print(f"{'='*60}")
+    parts = []
 
+    # 1. User node summary
     try:
         node_response = client.user.get_node(user_id=user_id)
-        print(f"[ZEP ENGAGE] Node response: {node_response}")
-
         summary = None
         if node_response and hasattr(node_response, 'node') and node_response.node:
             summary = getattr(node_response.node, 'summary', None)
-
         if summary:
-            print(f"[ZEP ENGAGE] Summary: {summary}")
-        else:
-            print("[ZEP ENGAGE] No summary found")
-
-        print(f"{'='*60}\n")
-        return summary or None
-
+            parts.append(summary)
     except Exception as e:
-        print(f"[ZEP ENGAGE] Error: {e}")
+        print(f"[ZEP ENGAGE] Error fetching node summary: {e}")
         return None
+
+    # 2. Last user message from most recent thread
+    try:
+        threads_response = client.user.get_threads(user_id=user_id)
+        threads = getattr(threads_response, 'threads', None) or threads_response or []
+
+        if threads:
+            # Sort by created_at descending to get the most recent thread
+            threads_sorted = sorted(
+                threads,
+                key=lambda t: getattr(t, 'created_at', '') or '',
+                reverse=True,
+            )
+            last_thread = threads_sorted[0]
+            thread_id = getattr(last_thread, 'thread_id', None) or getattr(last_thread, 'id', None)
+            print(f"[ZEP ENGAGE] Most recent thread ID: {thread_id}")
+
+            if thread_id:
+                msg_response = client.thread.get(thread_id, lastn=2)
+                messages = getattr(msg_response, 'messages', None) or []
+
+                for msg in reversed(messages):
+                    role = getattr(msg, 'role', '') or getattr(msg, 'role_type', '') or ''
+                    if str(role).lower() == 'user':
+                        last_user_msg = getattr(msg, 'content', None)
+                        if last_user_msg:
+                            print(f"[ZEP ENGAGE] Last user message: {last_user_msg}")
+                            # Insert at front so nano sees it first
+                            parts.insert(0, f"[LAST_TOPIC] {last_user_msg}")
+                        break
+    except Exception as e:
+        print(f"[ZEP ENGAGE] Error fetching last message: {e}")
+
+    return "\n\n".join(parts) if parts else None
 
 
 def delete_user(user_id: str):
