@@ -183,6 +183,7 @@ class RAGUpsertRequest(BaseModel):
     latitude: Optional[str] = Field(None, description="Latitude as string")
     longitude: Optional[str] = Field(None, description="Longitude as string")
     language: Optional[str] = Field("en", description="Language code: en, fr, it, de, es, zh. Defaults to 'en'")
+    image: Optional[str] = Field(None, description="Image URL for the place (e.g. from Google Places Photo API)")
 
     class Config:
         json_schema_extra = {

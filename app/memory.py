@@ -69,6 +69,36 @@ def get_message(thread_id: str) -> str :
 
 
 
+def get_user_memory_for_engage(user_id: str) -> str:
+    """
+    Retrieve the user's Zep graph node summary for re-engagement.
+    Returns the summary string, or empty string on failure.
+    """
+    print(f"\n{'='*60}")
+    print(f"[ZEP ENGAGE] Fetching node summary for user: {user_id}")
+    print(f"{'='*60}")
+
+    try:
+        node_response = client.user.get_node(user_id=user_id)
+        print(f"[ZEP ENGAGE] Node response: {node_response}")
+
+        summary = None
+        if node_response and hasattr(node_response, 'node') and node_response.node:
+            summary = getattr(node_response.node, 'summary', None)
+
+        if summary:
+            print(f"[ZEP ENGAGE] Summary: {summary}")
+        else:
+            print("[ZEP ENGAGE] No summary found")
+
+        print(f"{'='*60}\n")
+        return summary or ""
+
+    except Exception as e:
+        print(f"[ZEP ENGAGE] Error: {e}")
+        return ""
+
+
 def delete_user(user_id: str):
     client.user.delete(f"{user_id}")
 

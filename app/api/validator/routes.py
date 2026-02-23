@@ -46,6 +46,42 @@ async def get_google_maps_data(location_query: str, api_key: str) -> Optional[Di
 
 
 # -------------------------------------------------------
+# Helper: Google Place Photo
+# -------------------------------------------------------
+async def get_place_photo_url(place_id: str, api_key: str) -> Optional[str]:
+    """
+    Fetches the first photo for a place using the Place Details API.
+    Returns a direct photo URL (Google redirects photo_reference URLs to the image).
+    """
+    details_url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "photos",
+        "key": api_key,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(details_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") == "OK":
+                photos = data.get("result", {}).get("photos", [])
+                if photos:
+                    photo_ref = photos[0].get("photo_reference")
+                    if photo_ref:
+                        url = (
+                            f"https://maps.googleapis.com/maps/api/place/photo"
+                            f"?maxwidth=800&photoreference={photo_ref}&key={api_key}"
+                        )
+                        print(f"📸 Place photo URL obtained")
+                        return url
+            print(f"📸 No photos found for place_id: {place_id} (status: {data.get('status')})")
+    except Exception as e:
+        print(f"📸 Error fetching place photo: {e}")
+    return None
+
+
+# -------------------------------------------------------
 # Helper: RAG Upsert
 # -------------------------------------------------------
 async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict[str, Any]] = None) -> bool:
@@ -106,6 +142,8 @@ async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict
         payload["latitude"] = formatted_data["latitude"]
     if formatted_data.get("longitude"):
         payload["longitude"] = formatted_data["longitude"]
+    if formatted_data.get("image"):
+        payload["image"] = formatted_data["image"]
 
     # Add optional meta_obj fields
     if meta_obj.get("ranking"):
@@ -447,13 +485,17 @@ async def process_query_research(
 
     api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
     maps_data = None
+    place_image_url = None
     if location and api_key:
         print(f"🗺️  Looking up Google Maps data for: {location}")
         maps_data = await get_google_maps_data(location, api_key)
         if maps_data:
             print(f"✅ Google Maps data retrieved successfully")
+            place_id = maps_data.get("place_id")
+            if place_id:
+                place_image_url = await get_place_photo_url(place_id, api_key)
         else:
-            print(f"🗺️  Looking up Google Maps data for: {location}")
+            print(f"🗺️  No Google Maps data found for: {location}")
     elif not api_key:
         print("⚠️  Warning: GOOGLE_MAPS_API_KEY not set. Skipping maps lookup.")
 
@@ -512,6 +554,8 @@ async def process_query_research(
 
             formatted_data["score_value"] = score_value
             formatted_data["google_maps_place_id"] = maps_data.get("place_id") if maps_data else None
+            if place_image_url:
+                formatted_data["image"] = place_image_url
 
             if skip_storage:
                 print(f"📊 Action: Read-only mode (skip_storage=True) — no RAG upsert, no Supabase insert")
@@ -866,6 +910,8 @@ async def rag_upsert(request: RAGUpsertRequest):
         payload["latitude"] = request.latitude
     if request.longitude:
         payload["longitude"] = request.longitude
+    if request.image:
+        payload["image"] = request.image
 
     # Add optional meta_obj fields
     if request.meta_obj.ranking:

@@ -19,7 +19,7 @@ from .services import (
     check_pii_fast,
 )
 from .agents_ import validation_agent
-from .memory import delete_user, create_new_user, setup_user_session, add_message
+from .memory import delete_user, create_new_user, setup_user_session, add_message, get_user_memory_for_engage
 
 router = APIRouter()
 
@@ -216,7 +216,7 @@ async def _main_stream(
         query = await summarize_for_rag(final_message)
         return await rag(query=query, reference=request.reference)
 
-    zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id))
+    zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id)) if request.is_pro else None
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
 
@@ -315,8 +315,9 @@ async def _main_stream(
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
 
-    # ── Ensure Zep session is ready before agent calls add_message ──
-    await zep_task
+    # ── Ensure Zep session is ready before agent calls add_message (pro only) ──
+    if zep_task:
+        await zep_task
 
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     if validation_result.final_output.isTravelRelated:
@@ -344,6 +345,7 @@ async def _main_stream(
             original_message=request.message,
             thread_id=thread_id,
             queue=token_queue,
+            is_pro=request.is_pro,
         )
     )
 
@@ -454,3 +456,77 @@ async def create_user_route(user: UserCreateRequest):
 @router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "agent-streaming-api"}
+
+
+# ─── Memory Re-engagement Endpoint ───────────────────────────────
+
+from .services import _openai_client   # reuse the shared AsyncOpenAI client
+
+@router.get("/memory/engage")
+async def memory_engage(user_id: str = Query(..., description="The user's ID")):
+    """
+    Stream a personalised re-engagement question token by token.
+    Fetches Zep user summary, then streams gpt-4.1-nano output as SSE.
+    """
+    context = await asyncio.to_thread(get_user_memory_for_engage, user_id)
+
+    fallback = "Where would you like to travel next?"
+
+    async def generate() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
+
+        if not context:
+            yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+            yield f"data: {json.dumps({'content': fallback})}\n\n"
+            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
+            return
+
+        try:
+            stream = await _openai_client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the user's personal travel companion with a great memory. "
+                            "Your job: write ONE question that makes the user think 'wow, it actually remembers me.' "
+                            "RULES: "
+                            "- Pick the most specific, interesting detail from their history — a destination, a trip, a plan. "
+                            "- Sound like a friend casually checking in, not an AI reading data. "
+                            "- Be warm, curious, a little exciting — make them want to reply. "
+                            "- Max 12 words. No filler words like 'excited' or 'planning'. "
+                            "- NEVER ask something generic like 'Any recent adventures?' or 'Where to next?'. "
+                            "- Return ONLY the question — no explanation, no extra text. "
+                            "Great examples: "
+                            "'Did Paris live up to the hype?' / "
+                            "'Paris AND Venezuela — which one's winning right now?' / "
+                            "'So… did the Paris trip actually happen?' / "
+                            "'Still got Venezuela on the radar?'"
+                        ),
+                    },
+                    {"role": "user", "content": f"User travel history:\n{context}"},
+                ],
+                max_tokens=40,
+                temperature=0.7,
+                stream=True,
+            )
+            ttfb_sent = False
+            async for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if token:
+                    if not ttfb_sent:
+                        ttfb_sent = True
+                        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+                        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+                    yield f"data: {json.dumps({'content': json.dumps(token)[1:-1]})}\n\n"
+            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        except Exception as e:
+            print(f"[ENGAGE] Stream error: {e}")
+            yield f"data: {json.dumps({'content': fallback})}\n\n"
+
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

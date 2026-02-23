@@ -269,19 +269,22 @@ async def stream_agent_to_queue(
     original_message: str,
     thread_id: str,
     queue: asyncio.Queue,
+    is_pro: bool = False,
 ) -> None:
     """
     Run the agent stream and push every token into `queue` as it arrives.
-    The caller polls the queue while simultaneously advancing loading stages;
-    the moment the first token lands the caller drops loading and streams live.
 
     Sentinel protocol:
       • Each text chunk   → str put into queue
       • Error             → Exception instance put into queue
       • Stream complete   → None put into queue  (always sent via finally)
+
+    If is_pro=True: saves user question + agent answer (minus $$$$$ block) to Zep.
     """
     try:
-        add_message(role='user', thread_id=thread_id, message=original_message)
+        if is_pro:
+            add_message(role='user', thread_id=thread_id, message=original_message)
+
         research_further(final_message_with_ref)
 
         if agent_name == 'rag_format_agent':
@@ -290,12 +293,12 @@ async def stream_agent_to_queue(
             result = Runner.run_streamed(web_search_agent, final_message_with_ref)
 
         # Strip the {"answer":"..."} JSON wrapper — handles compact and pretty-printed JSON.
-        # Regex matches: { optional whitespace "answer" optional whitespace : optional whitespace "
         _PREFIX_RE  = re.compile(r'\{\s*"answer"\s*:\s*"')
-        _SUFFIX_LEN = 10   # buffer enough chars to catch any trailing "\n  \n}" variant
+        _SUFFIX_LEN = 10
         prefix_buf  = ""
         prefix_done = False
         suffix_buf  = ""
+        full_answer = ""   # accumulate for Zep (pro users only)
 
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
@@ -309,12 +312,11 @@ async def stream_agent_to_queue(
                     m = _PREFIX_RE.search(prefix_buf)
                     if m:
                         prefix_done = True
-                        chunk = prefix_buf[m.end():]   # everything after the opening "
+                        chunk = prefix_buf[m.end():]
                         prefix_buf = ""
                         if not chunk:
                             continue
                     elif len(prefix_buf) > 40:
-                        # no JSON wrapper found after 40 chars — treat as plain text
                         prefix_done = True
                         chunk = prefix_buf
                         prefix_buf = ""
@@ -324,21 +326,32 @@ async def stream_agent_to_queue(
                 # ── Rolling suffix buffer to strip trailing "} or "\n} ──
                 pending = suffix_buf + chunk
                 if len(pending) > _SUFFIX_LEN:
-                    await queue.put(pending[:-_SUFFIX_LEN])
+                    emit = pending[:-_SUFFIX_LEN]
+                    await queue.put(emit)
+                    if is_pro:
+                        full_answer += emit
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
 
-        # Flush suffix — drop only if it's closing JSON, emit anything else
+        # Flush suffix
         if suffix_buf:
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             if cleaned:
                 await queue.put(cleaned)
+                if is_pro:
+                    full_answer += cleaned
+
+        # ── Save assistant answer to Zep (pro only) — strip $$$$$ metadata block ──
+        if is_pro and full_answer:
+            clean = full_answer.split("$$$$$")[0].strip()
+            if clean:
+                add_message(role='assistant', thread_id=thread_id, message=clean)
 
     except Exception as e:
-        await queue.put(e)          # consumer yields error event then breaks
+        await queue.put(e)
     finally:
-        await queue.put(None)       # sentinel — always fired
+        await queue.put(None)
 
 async def get_complete_response(message: str, thread_id: str , mode: str) -> tuple[str, dict]:
     """Generates a complete, non-streamed response and provides timing info."""

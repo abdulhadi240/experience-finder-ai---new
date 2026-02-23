@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     param: str
     threadId: Optional[str]
     old_interactions: Optional[list[Interaction]] = None
+    is_pro: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
     
     
 class Output_Format(BaseModel):
