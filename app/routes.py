@@ -477,10 +477,6 @@ async def memory_engage(user_id: str = Query(..., description="The user's ID")):
         yield f"data: {json.dumps({'start_time': start_time, 'status': 'started'})}\n\n"
 
         if not context:
-            yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
-            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
-            yield f"data: {json.dumps({'content': fallback})}\n\n"
-            yield f"data: {json.dumps({'content': '\"}'})}\n\n"
             yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
             return
 

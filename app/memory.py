@@ -92,11 +92,11 @@ def get_user_memory_for_engage(user_id: str) -> str:
             print("[ZEP ENGAGE] No summary found")
 
         print(f"{'='*60}\n")
-        return summary or ""
+        return summary or None
 
     except Exception as e:
         print(f"[ZEP ENGAGE] Error: {e}")
-        return ""
+        return None
 
 
 def delete_user(user_id: str):
