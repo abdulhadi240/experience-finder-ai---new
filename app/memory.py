@@ -137,6 +137,24 @@ def get_user_memory_for_engage(user_id: str) -> str:
     return "\n\n".join(parts) if parts else None
 
 
+def get_user_preferences(user_id: str) -> str | None:
+    """
+    Retrieve the user's Zep node summary for answering preference/history queries.
+    Returns the summary string, or None if not available.
+    """
+    try:
+        node_response = client.user.get_node(user_id=user_id)
+        if node_response and hasattr(node_response, 'node') and node_response.node:
+            summary = getattr(node_response.node, 'summary', None)
+            if summary:
+                print(f"[ZEP PREFS] Got node summary for user {user_id}: {summary[:120]}")
+                return summary
+        return None
+    except Exception as e:
+        print(f"[ZEP PREFS] Error fetching preferences for user {user_id}: {e}")
+        return None
+
+
 def delete_user(user_id: str):
     client.user.delete(f"{user_id}")
 

@@ -34,7 +34,8 @@ async def summarize_for_rag(message: str) -> str:
                     "content": (
                         "Convert the user message into a concise standalone search query "
                         "for a travel database. Resolve any pronouns or references using context. "
-                        "Return ONLY the query, no explanation, no punctuation at the end."
+                        "Silently fix any misspelled destination, city, or place names (e.g. 'Karahic' → 'Karachi'). "
+                        "Return ONLY the corrected query, no explanation, no punctuation at the end."
                     ),
                 },
                 {"role": "user", "content": message},
@@ -236,19 +237,32 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
     while the agent processes RAG and generates recommendations.
     """
     prompt = (
-        f"You're a well-travelled friend Your name is Hiptraveler. Someone just asked: \"{message}\"\n\n"
-        "Write 1–2 sentences MAX. Rules:\n"
-        "- React warmly to the destination or topic — no recommendations, no places, no lists\n"
-        "- Casual, direct, warm — like a quick text from a friend\n"
-        "- End with a period. Be brief.\n"
-        "- Never start with: Certainly, Great, Of course, Sure, Absolutely, As an AI"
+        f"You are HipTraveler, a professional AI trip planning assistant.\n"
+        f"Here is the full conversation context and the user's latest question:\n{message}\n\n"
+        "Write 1-2 sentences that act as a LEAD-IN to a detailed response that will appear immediately after yours. "
+        "Your text and the main response will be joined together — so write as if you are starting the answer, not introducing it.\n\n"
+        "Choose your style based on what the user is asking:\n"
+        "- Destination / places / food / activities: Begin with a relevant insight about the topic and end with a colon or dash "
+        "so the main list flows naturally (e.g. 'Paris has one of the world's most exciting dining scenes — here are some standout picks:')\n"
+        "- User's own preferences / past selections / memory: Do NOT guess or predict anything specific. "
+        "Use only a neutral bridge that leads into the verified data, e.g. 'Here is what your travel profile shows:' or 'Here is what I have saved for you:'. "
+        "Never mention specific activities, destinations, or styles — the real data follows.\n"
+        "- General travel info / planning: Open with one strong, relevant fact or framing sentence that sets up the answer.\n\n"
+        "Rules:\n"
+        "- Silently correct any misspelled destination, city, or place name and use the correct spelling in your response "
+        "(e.g. 'Karahic' → 'Karachi', 'Paries' → 'Paris', 'Tokio' → 'Tokyo'). Never point out the mistake.\n"
+        "- Professional and warm — HipTraveler voice, not robotic, not overly casual\n"
+        "- Do NOT name specific places, ratings, or confirm definitive facts — the main response handles those details\n"
+        "- Do NOT end with a question\n"
+        "- Do NOT use filler openers: Certainly, Great, Of course, Sure, Absolutely, Happy to, As an AI\n"
+        "- Max 2 sentences"
     )
     try:
         stream = await _openai_client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
-            temperature=0.85,
+            max_tokens=120,
+            temperature=0.7,
             stream=True,
         )
         async for chunk in stream:

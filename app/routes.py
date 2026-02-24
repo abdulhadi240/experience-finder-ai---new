@@ -19,7 +19,7 @@ from .services import (
     check_pii_fast,
 )
 from .agents_ import validation_agent
-from .memory import delete_user, create_new_user, setup_user_session, add_message, get_user_memory_for_engage
+from .memory import delete_user, create_new_user, setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
 
 router = APIRouter()
 
@@ -219,6 +219,7 @@ async def _main_stream(
     zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id)) if request.is_pro else None
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
+    zep_prefs_task  = asyncio.create_task(asyncio.to_thread(get_user_preferences, request.user_id)) if request.user_id else None
 
     # ── PII check — resolves in ~150-200ms, starter first token ~300ms ──
     # Awaiting here adds zero real latency since starter hasn't produced a token yet
@@ -319,6 +320,14 @@ async def _main_stream(
     if zep_task:
         await zep_task
 
+    # ── Await Zep prefs (in-flight since t=0, inject into agent context) ──────
+    zep_prefs = None
+    if zep_prefs_task:
+        try:
+            zep_prefs = await zep_prefs_task
+        except Exception:
+            zep_prefs = None
+
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     if validation_result.final_output.isTravelRelated:
         try:
@@ -332,10 +341,19 @@ async def _main_stream(
     if rag_data:
         final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
 
-    final_message_with_ref += "\n\n[INSTRUCTION] Begin your response with one short natural sentence that introduces the recommendations (e.g. 'Here are the best things to do in Tokyo:' or 'A few great spots to check out in Rome:'). Make it specific to the query. Then continue with your list. [/INSTRUCTION]"
+    if zep_prefs:
+        final_message_with_ref += f"\n\n[USER_PREFERENCES]\n{zep_prefs}\n[/USER_PREFERENCES]"
+
+    final_message_with_ref += (
+        "\n\n[INSTRUCTION] A short lead-in sentence has already been shown to the user before your response. "
+        "Do NOT repeat a greeting, opener, or intro sentence — jump directly into the content (bullet list, details, or answer body). "
+        "If the query is about the user's preferences or past selections and [USER_PREFERENCES] data is present, "
+        "answer specifically from that data. [/INSTRUCTION]"
+    )
 
     # chunks present = RAG has real content → format agent; no chunks = fall back to web
-    agent_name = "rag_format_agent" if rag_chunks else "web_search_agent"
+    # memory queries have no RAG chunks — rag_format_agent will answer from [USER_PREFERENCES]
+    agent_name = "rag_format_agent" if (rag_chunks or validation_result.final_output.isMemoryQuery) else "web_search_agent"
 
     token_queue = asyncio.Queue()
     asyncio.create_task(
@@ -487,17 +505,17 @@ async def memory_engage(user_id: str = Query(..., description="The user's ID")):
                     {
                         "role": "system",
                         "content": (
-                            "You are a close friend who genuinely cares. The user was asking about travel and you're checking in on them. "
-                            "STRICT RULE: The context starts with '[LAST_TOPIC]' — your message MUST be about that topic. "
-                            "STYLE: Sound like you've been thinking about their trip. Show genuine curiosity — not a service offer. "
-                            "- Like a friend casually checking in over text, warm and personal. "
-                            "- Max 12 words. No corporate words, no offers, no 'should I', no 'let me'. "
-                            "- Return ONLY the message. "
+                            "You are HipTraveler, a professional AI travel assistant re-engaging a returning user. "
+                            "The user's last topic is marked with [LAST_TOPIC] in the context — your message MUST be about that topic. "
+                            "CRITICAL: Do NOT include '[LAST_TOPIC]' or any tags in your response. Output only the message text. "
+                            "STYLE: Warm, professional, and concise — like a knowledgeable travel concierge checking in. "
+                            "- Max 12 words. No filler words, no 'I can help', no 'let me'. "
+                            "- Return ONLY the message text, nothing else. "
                             "Examples of the right tone: "
-                            "'Hey, whatever happened with Turkey?' / "
-                            "'Still thinking about Turkey?' / "
-                            "'Hope the Turkey trip came together!' / "
-                            "'Did Turkey end up happening?'"
+                            "'Still planning your Paris trip?' / "
+                            "'Hope your Paris trip is coming together!' / "
+                            "'Ready to continue exploring Paris?' / "
+                            "'Still looking for restaurants in Paris?'"
                         ),
                     },
                     {"role": "user", "content": f"User travel history:\n{context}"},

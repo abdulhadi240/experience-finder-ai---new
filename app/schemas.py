@@ -38,6 +38,7 @@ class global_input_guardrail(BaseModel):
         isValid: bool
         reason: str
         isTravelRelated: bool
+        isMemoryQuery: bool
         solution: str
         
         
