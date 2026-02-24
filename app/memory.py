@@ -59,6 +59,20 @@ def add_message(message: str, thread_id: str, role: str):
         )
     ]
     client.thread.add_messages(thread_id, messages=messages)
+    print(f"\n[ZEP SAVE] role={role} | thread={thread_id}")
+    print(f"[ZEP SAVE] content={message[:120]}")
+
+    # Verify by reading back the last 2 messages from the thread
+    try:
+        verify = client.thread.get(thread_id, lastn=2)
+        saved = getattr(verify, 'messages', []) or []
+        print(f"[ZEP VERIFY] Messages in thread: {len(saved)}")
+        for m in saved:
+            r = getattr(m, 'role', '?')
+            c = str(getattr(m, 'content', ''))[:80]
+            print(f"  [{r}] {c}")
+    except Exception as e:
+        print(f"[ZEP VERIFY] Error: {e}")
     
     
     

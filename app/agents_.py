@@ -385,24 +385,41 @@ If NOT travel-related → isValid = false, reason = OFF_TOPIC.
 
 Only reached if the query IS travel-related.
 
-**isTravelRelated = true** — User explicitly states they are going somewhere or wants a trip planned:
-- "Plan a 7-day trip to Morocco" ✅
-- "We're traveling to Paris in June" ✅
-- "Create an itinerary for my Japan trip" ✅
-- "I'm heading to Bali for 5 days, plan something" ✅
+**isTravelRelated = true** — ONLY in these two cases:
+1. The user's CURRENT message explicitly asks to plan a trip or create an itinerary:
+   - "Plan a 7-day trip to Morocco" ✅
+   - "We're traveling to Paris in June, plan it for us" ✅
+   - "Create an itinerary for my Japan trip" ✅
+   - "I'm heading to Bali for 5 days, plan something" ✅
+2. The AI previously asked a planning question (e.g., "Want me to build a trip itinerary?", "How many days will your trip be?") AND the user responds affirmatively in their CURRENT message (e.g., "yes", "sure", "please", "let's do it", "go ahead").
 
-Trigger phrases: "I'm going to", "Plan a trip to", "Create an itinerary for", "We're visiting", "We will be in", "Help me plan", "I want to go to", "We're spending X days in"
+Trigger phrases for case 1: "Plan a trip to", "Create an itinerary for", "We're visiting", "We will be in", "Help me plan", "We're spending X days in", "build me an itinerary"
 
-**isTravelRelated = false** — Everything else that is travel-related but has no explicit travel commitment:
+**⚠️ CRITICAL RULE — Recommendations are NEVER trip planning:**
+Any request for recommendations (restaurants, hotels, activities, things to do, places to visit, attractions) is ALWAYS `isTravelRelated = false`, even if:
+- The conversation history mentions a destination
+- The AI previously asked trip planning questions
+- The user is clearly going to that destination
+
+Examples that are ALWAYS false:
+- "Can you suggest some desi restaurants?" (asking for recommendations) ❌
+- "What are the best hotels in Paris?" (asking for recommendations) ❌
+- "I want to find restaurants in Rome" (looking for places, not planning) ❌
+- "Suggest some activities in Bali" (recommendation request) ❌
+
+**isTravelRelated = false** — Everything that is travel-related but NOT explicit planning + affirmative intent:
 - "Best beaches in Thailand?" (general question)
 - "Is October good for visiting India?" (research)
 - "Top restaurants in Rome?" (recommendation)
 - "What currency does Colombia use?" (informational)
 - "Give me 5 places to visit in Karachi" (list request)
+- Any restaurant/hotel/activity suggestion request, regardless of context
 
-**Quick test:** Did the user SAY they are going, or are they just asking ABOUT a place?
-- Said they're going → true
-- Just asking about it → false
+**Quick test (apply in order):**
+1. Is the user asking for recommendations (restaurants, hotels, activities)? → ALWAYS false
+2. Did the user explicitly ask to PLAN or CREATE an ITINERARY in this message? → true
+3. Did the AI ask a planning question AND the user just said yes/sure/please? → true
+4. Everything else → false
 
 ---
 
@@ -437,7 +454,8 @@ Examples:
 
 ✓ Did I analyze full intent, not just a keyword?
 ✓ Does the query mention or imply a destination/travel context? (If yes → not OFF_TOPIC)
-✓ Did the user explicitly say they are traveling? (If no → isTravelRelated = false)
+✓ Is the user asking for restaurant/hotel/activity recommendations? (If yes → isTravelRelated = false, always)
+✓ Did the user explicitly ask to PLAN/ITINERARY in this message, OR affirmatively respond to a planning question? (If no → isTravelRelated = false)
 ✓ Does my solution stay 100% within travel? (Never offer general help)
 ✓ For OFF_TOPIC: Did I redirect to a travel angle?
 ✓ Output is strict JSON only — no extra text.
