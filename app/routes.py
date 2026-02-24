@@ -345,10 +345,11 @@ async def _main_stream(
         final_message_with_ref += f"\n\n[USER_PREFERENCES]\n{zep_prefs}\n[/USER_PREFERENCES]"
 
     final_message_with_ref += (
-        "\n\n[INSTRUCTION] A short lead-in sentence has already been shown to the user before your response. "
-        "Do NOT repeat a greeting, opener, or intro sentence — jump directly into the content (bullet list, details, or answer body). "
-        "If the query is about the user's preferences or past selections and [USER_PREFERENCES] data is present, "
-        "answer specifically from that data. [/INSTRUCTION]"
+        "\n\n[INSTRUCTION] A lead-in has already been shown to the user. "
+        "NEVER start with: 'I am HipTraveler', 'I\u2019m HipTraveler', 'Your name is', 'Hi', 'Hello', or any self-introduction or greeting. "
+        "Jump directly into the content — bullet list, facts, or answer body. "
+        "If the user only greeted you or shared their name, respond with a single short question about their travel plans. "
+        "If [USER_PREFERENCES] data is present and the query is about preferences, answer specifically from that data. [/INSTRUCTION]"
     )
 
     # chunks present = RAG has real content → format agent; no chunks = fall back to web
