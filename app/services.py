@@ -242,7 +242,7 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
         "- Unsafe (sexual, hate, off-topic, spam, PII like phone/email): → I can only assist with travel-related topics.\n"
         "- Greeting or user shares their name: → Hi [name]! or Welcome to HipTraveler! — one warm sentence, NO question.\n"
         "- Asking about their own preferences/history/past selections: → Here is what your travel profile shows:\n"
-        "- Trip planning / itinerary request: → Exactly 2 sentences. First: acknowledge the trip with the destination and duration if mentioned (e.g. 'A five-day trip to Karachi sounds fantastic!'). Second: one brief exciting fact about the destination that sets the mood (e.g. 'With its vibrant culture, historic sites, and beautiful beaches, you'll have plenty to explore and enjoy.'). No planning advice, no tips, no questions.\n"
+        "- Trip planning / itinerary request: → Exactly 2 short sentences. First: acknowledge with destination and duration if mentioned (e.g. 'A five-day trip to Karachi sounds fantastic!'). Second: a single simple excitement sentence with no details, no lists, no tips (e.g. 'You are going to love it!' or 'It is going to be an amazing trip!'). Nothing more.\n"
         "- Any other travel query: → 2 warm engaging sentences about the topic. Share a genuine insight or context that sets the scene. NO list lead-ins ('here are...', 'here are some places') — the main response handles all lists.\n"
         "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to. NEVER ask a question — not even for greetings. For greetings just say 'Hi [name]!' or 'Welcome to HipTraveler!' and nothing more."
     )

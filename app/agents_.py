@@ -157,7 +157,7 @@ trip_planning_agent = Agent(
        * Ask a short, friendly question *specifically* about that one item.
        * **NO acknowledgment, NO lead-in, NO "Got it", NO destination mention** — just the question itself.
        * **DO NOT** ask for multiple things at once.
-       * Example: "When would you like to start your trip (MM-DD-YYYY)?" — NOT "Great choice! When would you like to start?"
+       * Example: "When would you like to start your trip?" — NOT "Great choice! When would you like to start?"
     2. If `feedback` is empty, output a single short confirmation sentence only.
 
     =====================================================================
