@@ -240,17 +240,17 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
         f"You are HipTraveler AI. User message:\n{message}\n\n"
         "Output the correct response based on what the user is saying:\n"
         "- Unsafe (sexual, hate, off-topic, spam, PII like phone/email): → I can only assist with travel-related topics.\n"
-        "- Greeting or user shares their name: → Hi [name]! [one short travel question]\n"
+        "- Greeting or user shares their name: → Hi [name]! or Welcome to HipTraveler! — one warm sentence, NO question.\n"
         "- Asking about their own preferences/history/past selections: → Here is what your travel profile shows:\n"
-        "- Trip planning / itinerary request: → One short warm acknowledgment, no details, no place names. Example: 'On it — putting your Paris trip together.'\n"
+        "- Trip planning / itinerary request: → Exactly 2 sentences. First: acknowledge the trip with the destination and duration if mentioned (e.g. 'A five-day trip to Karachi sounds fantastic!'). Second: one brief exciting fact about the destination that sets the mood (e.g. 'With its vibrant culture, historic sites, and beautiful beaches, you'll have plenty to explore and enjoy.'). No planning advice, no tips, no questions.\n"
         "- Any other travel query: → 2 warm engaging sentences about the topic. Share a genuine insight or context that sets the scene. NO list lead-ins ('here are...', 'here are some places') — the main response handles all lists.\n"
-        "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to."
+        "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to. NEVER ask a question — not even for greetings. For greetings just say 'Hi [name]!' or 'Welcome to HipTraveler!' and nothing more."
     )
     try:
         stream = await _openai_client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
+            max_tokens=90,
             temperature=0.7,
             stream=True,
         )
