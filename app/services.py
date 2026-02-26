@@ -371,11 +371,12 @@ async def get_complete_response(message: str, thread_id: str , mode: str) -> tup
         total_time = end_time - start_time
         
         timing_info = {
-            "param" : mode,
-            "threadId":thread_id,
+            "param": mode,
+            "threadId": thread_id,
             "total_time": f"{total_time:.2f} seconds",
-            "response_type": "non_streaming"
-        }    
+            "response_type": "non_streaming",
+            "plan": True
+        }
             
         return full_response, timing_info
 
