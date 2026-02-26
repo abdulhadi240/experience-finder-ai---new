@@ -205,6 +205,27 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
+    # ── Fast-path: plan queries skip all middleware ───────────────
+    # No nano starter, no PII check, no RAG, no validation, no Zep prefs.
+    # Go directly to the trip planning agent — faster + lower cost.
+    # Zep save happens after streaming — fully non-blocking.
+    if request.plan:
+        try:
+            response_content, timing_info = await get_complete_response(final_message, thread_id, param)
+            yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+            # ── Save to Zep after response is sent — never blocks streaming ──
+            if request.is_pro:
+                summary = getattr(response_content, 'summary', '') or ''
+                async def _save_plan_to_zep():
+                    await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
+                    await asyncio.to_thread(add_message, role='user', thread_id=thread_id, message=request.message)
+                    if summary:
+                        await asyncio.to_thread(add_message, role='assistant', thread_id=thread_id, message=summary)
+                asyncio.create_task(_save_plan_to_zep())
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        return
+
     # ── Fire starter + light PII check simultaneously ────────────
     starter_queue = asyncio.Queue()
     asyncio.create_task(stream_starter_to_queue(final_message, param, starter_queue))
