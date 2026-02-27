@@ -16,13 +16,13 @@ class ResearchValidator:
         """Initialize the validator with API keys from environment variables."""
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.perplexity_key = os.getenv("PERPLEXITY_API_KEY")
-        self.tavily_key = os.getenv("TAVILY_API_KEY")
+        self.gemini_key = os.getenv("GEMINI_API_KEY")
         self.supabase_url = os.getenv("SUPABASE_URL")
         self.service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-        if not all([self.openai_key, self.perplexity_key, self.tavily_key]):
+        if not all([self.openai_key, self.perplexity_key, self.gemini_key]):
             raise ValueError(
-                "Missing API keys. Please set OPENAI_API_KEY, PERPLEXITY_API_KEY, and TAVILY_API_KEY environment variables."
+                "Missing API keys. Please set OPENAI_API_KEY, PERPLEXITY_API_KEY, and GEMINI_API_KEY environment variables."
             )
 
         # Initialize Supabase client
@@ -170,50 +170,60 @@ class ResearchValidator:
                 "error": str(e)
             }
     
-    def search_tavily(self, query: str) -> Dict[str, Any]:
-        """Perform web search using Tavily API."""
-        url = "https://api.tavily.com/search"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.tavily_key}"
-        }
-        
+    def search_gemini(self, query: str) -> Dict[str, Any]:
+        """Perform web search using Google Gemini API with Google Search grounding."""
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.5-flash:generateContent?key={self.gemini_key}"
+        )
+        headers = {"Content-Type": "application/json"}
+
+        if self.blacklist_domains:
+            blocked = ", ".join(self.blacklist_domains)
+            blacklist_note = f"\nDO NOT reference or cite any content from these domains: {blocked}."
+        else:
+            blacklist_note = ""
+
+        system_prompt = (
+            "You are an expert internet research assistant. Gather accurate, up-to-date, and verifiable "
+            "information from the web about locations, attractions, and businesses. "
+            "Prioritize sources in this order: 1) Tripadvisor, 2) Yelp, 3) official or reputable travel/review sites "
+            "(Google Travel, Lonely Planet, etc.). "
+            "For each entity, collect: name, location, ranking info (e.g., '#1 of 1 Things to Do in Sandy Point'), "
+            "price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. "
+            "Present findings in structured format, cite Tripadvisor or Yelp first, and note when primary sources "
+            "are unavailable. Be factual, concise, and analytical; use the most recent data available."
+            + blacklist_note
+        )
+
         data = {
-            "query": query,
-            "include_answer": "advanced",
-            "search_depth": "advanced",
-            "include_raw_content": True,
-            "include_domains": [],
-            "exclude_domains": self.blacklist_domains
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": query}], "role": "user"}],
+            "tools": [{"google_search": {}}],
         }
-        
+
         try:
             response = requests.post(url, headers=headers, json=data, timeout=60)
             if response.status_code == 200:
                 result = response.json()
-                answer = result.get("answer", "")
-                results = result.get("results", [])
-                citations = [r.get("url") for r in results if r.get("url")]
-                
                 return {
                     "success": True,
-                    "source": "Tavily",
+                    "source": "Gemini",
                     "data": result,
-                    "content": answer,
-                    "citations": citations,
-                    "raw_results": results
+                    "content": self._extract_gemini_content(result),
+                    "citations": self._extract_gemini_citations(result),
                 }
             else:
                 return {
                     "success": False,
-                    "source": "Tavily",
-                    "error": f"Error {response.status_code}: {response.text}"
+                    "source": "Gemini",
+                    "error": f"Error {response.status_code}: {response.text}",
                 }
         except Exception as e:
             return {
                 "success": False,
-                "source": "Tavily",
-                "error": str(e)
+                "source": "Gemini",
+                "error": str(e),
             }
     
     def _extract_openai_content(self, result: Dict) -> str:
@@ -267,6 +277,33 @@ class ResearchValidator:
             print(f"⚠️ Error extracting OpenAI citations: {e}")
         return citations
     
+    def _extract_gemini_content(self, result: Dict) -> str:
+        """Extract text content from Gemini API response."""
+        try:
+            candidates = result.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text_parts = [p.get("text", "") for p in parts if p.get("text")]
+                return "\n".join(text_parts).strip()
+        except Exception as e:
+            print(f"⚠️ Error extracting Gemini content: {e}")
+        return ""
+
+    def _extract_gemini_citations(self, result: Dict) -> List[str]:
+        """Extract source URLs from Gemini grounding metadata."""
+        citations = []
+        try:
+            candidates = result.get("candidates", [])
+            if candidates:
+                grounding = candidates[0].get("groundingMetadata", {})
+                for chunk in grounding.get("groundingChunks", []):
+                    uri = chunk.get("web", {}).get("uri")
+                    if uri:
+                        citations.append(uri)
+        except Exception as e:
+            print(f"⚠️ Error extracting Gemini citations: {e}")
+        return citations
+
     def calculate_similarity_and_synthesize(self, research_results: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
         """Calculate similarity score (out of 3), synthesize research, and extract location."""
         successful_results = [r for r in research_results if r["success"] and r.get("content")]
@@ -418,22 +455,22 @@ Provide your response strictly in JSON format:
         print(f"{'='*80}\n")
         time.sleep(1)
         
-        # Tavily
+        # Gemini
         print(f"\n{'='*80}")
-        print(f"🔎 RESEARCH SOURCE 3: Tavily")
+        print(f"🔎 RESEARCH SOURCE 3: Gemini (Google Search)")
         print(f"{'='*80}")
         print(f"📤 Query: '{query}'")
-        tavily_result = self.search_tavily(query)
-        research_results.append(tavily_result)
-        print(f"✅ Success: {tavily_result.get('success')}")
-        if tavily_result.get('success'):
-            content = tavily_result.get('content', '')
+        gemini_result = self.search_gemini(query)
+        research_results.append(gemini_result)
+        print(f"✅ Success: {gemini_result.get('success')}")
+        if gemini_result.get('success'):
+            content = gemini_result.get('content', '')
             print(f"📝 Content type: {type(content).__name__}")
             print(f"📝 Content length: {len(str(content))} chars")
             print(f"📝 Content preview:\n{str(content)[:1000]}")
-            print(f"🔗 Citations ({len(tavily_result.get('citations', []))}): {tavily_result.get('citations', [])}")
+            print(f"🔗 Citations ({len(gemini_result.get('citations', []))}): {gemini_result.get('citations', [])}")
         else:
-            print(f"❌ Error: {tavily_result.get('error')}")
+            print(f"❌ Error: {gemini_result.get('error')}")
         print(f"{'='*80}\n")
         
         # Summary before synthesis

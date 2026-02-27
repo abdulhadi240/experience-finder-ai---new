@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.validator.models.schemas import ValidatorRequest, RAGUpsertRequest, RAGUpsertResponse
 from app.api.validator.services.openai_service import OpenAIService
 from app.api.validator.services.validator_service import validate_research
-from app.api.validator.services.conversion import convert_research_to_attraction
+from app.api.validator.services.conversion import convert_research_to_attraction, pick_best_citation
 from app.api.validator.services.supabase_service import SupabaseService
 from dotenv import load_dotenv
 import requests
@@ -540,6 +540,12 @@ async def process_query_research(
 
         if formatted_data_list:
             formatted_data = formatted_data_list[0].model_dump()
+
+            # ── Override source with best citation (TripAdvisor → Yelp → other) ──
+            best_src = pick_best_citation(result.get("citations", []))
+            if best_src:
+                formatted_data["source"] = best_src
+                print(f"🔗 Source set to: {best_src}")
 
             # ============================================
             # SCORE-BASED ROUTING:

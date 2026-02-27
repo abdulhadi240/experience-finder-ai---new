@@ -7,6 +7,30 @@ from typing import List, Optional, Dict, Any
 from openai import OpenAI
 import json
 import os
+import re
+
+# ── Compiled patterns for source prioritisation ──────────────────────────────
+_RE_TRIPADVISOR = re.compile(r'tripadvisor\.', re.IGNORECASE)
+_RE_YELP        = re.compile(r'\byelp\.com\b',  re.IGNORECASE)
+
+
+def pick_best_citation(citations: List[str]) -> str:
+    """
+    Scan all citation URLs and return the highest-priority source:
+      1. TripAdvisor  (tripadvisor.com / tripadvisor.co.uk / etc.)
+      2. Yelp         (yelp.com)
+      3. First other  third-party URL
+      4. ""           if citations is empty
+    """
+    ta_url   = next((u for u in citations if isinstance(u, str) and _RE_TRIPADVISOR.search(u)), None)
+    if ta_url:
+        return ta_url
+
+    yelp_url = next((u for u in citations if isinstance(u, str) and _RE_YELP.search(u)), None)
+    if yelp_url:
+        return yelp_url
+
+    return next((u for u in citations if isinstance(u, str) and u.startswith("http")), "")
 
 
 # Output Schema Models
