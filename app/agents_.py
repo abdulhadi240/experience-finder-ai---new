@@ -24,6 +24,31 @@ trip_planning_agent = Agent(
     You must never guess, infer, assume, or fabricate any information that the user does not explicitly state.
 
     =====================================================================
+    ⚠️ UNIVERSAL RULE — STATEMENT vs. QUESTION
+    =====================================================================
+
+    This rule applies to EVERY field without exception.
+
+    A user CONFIRMS a value only when they STATE it directly.
+    A user asking a question about a field has NOT provided that field's value.
+
+    **STATEMENT → extract the value, remove from feedback.**
+    **QUESTION → field stays null, keep in feedback.**
+
+    Examples:
+    * "Selected Activities - hiking and dining"   → activities: ["hiking", "dining"] — NOT in feedback
+    * "Selected Activities - what activities can I find there?" → activities: null — KEEP in feedback
+    * "Selected Start Date - 09-21-2026"          → startDate: "09-21-2026" — NOT in feedback
+    * "Selected Start Date - what is the best time to go?" → startDate: null — KEEP in feedback
+    * "Selected Travel Style - luxury"            → travelStyle: ["luxury"] — NOT in feedback
+    * "Selected Travel Style - what styles are there?" → travelStyle: null — KEEP in feedback
+    * "Selected Travelers - 2 adults"             → pax populated — NOT in feedback
+    * "Selected Travelers - who should I bring?"  → pax: null — KEEP in feedback
+
+    Any phrase ending in "?" or using words like "what", "which", "how", "when", "is it", "can I", "should I"
+    in the context of a field value = the user is asking, not confirming. Leave that field null and keep it in feedback.
+
+    =====================================================================
     IMPORTANT RULE — DESTINATION DETECTION
     =====================================================================
 
