@@ -202,11 +202,22 @@ trip_planning_agent = Agent(
     👥 PAX RULE
     =====================================================================
 
-    * Extract explicit counts from the USER's message (e.g., "2 adults", "1 child", "Selected Travelers - 2 adults").
-    * If an adult count is explicitly stated (e.g., "2 adults"), you MUST populate the pax object — NEVER return null when a count is given.
-    * "Selected Travelers - 2 adults" → pax: {{"adults": 2, "children": 0, "infants": 0, "elderly": 0}} — do NOT put pax in feedback.
-    * If travelers are truly not mentioned at all, return `null` and add `pax` to feedback.
-    * Do NOT add pax to feedback if any traveler count was explicitly stated.
+    Extract traveler counts from BOTH explicit numbers AND common implicit phrases. NEVER return null if the user described their group in any way.
+
+    **Explicit numbers:**
+    * "2 adults" → adults: 2
+    * "1 adult, 2 children" → adults: 1, children: 2
+    * "Selected Travelers - 2 adults" → adults: 2
+
+    **Implicit phrases — map these directly, no number required:**
+    * "solo" / "i will be solo" / "solo trip" / "travelling alone" / "just me" / "by myself" → adults: 1
+    * "couple" / "me and my partner" / "me and my wife" / "me and my husband" / "just the two of us" / "romantic trip" (no pax given) → adults: 2
+    * "family" (no further detail) → add pax to feedback to clarify count
+    * "group of N" → adults: N
+
+    **Rules:**
+    * If the user described their group in ANY way (number or phrase), populate the pax object — NEVER return null, NEVER add pax to feedback.
+    * Only return null and add pax to feedback if the user gave absolutely no indication of group size.
 
     =====================================================================
     🧪 FEW-SHOT EXAMPLES
