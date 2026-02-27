@@ -205,21 +205,21 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
+    # ── Save user question to Zep — always, non-blocking, never gates anything ──
+    if request.user_id:
+        async def _save_to_zep():
+            try:
+                await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
+                await asyncio.to_thread(add_message, role='user', thread_id=thread_id, message=request.message)
+            except Exception as e:
+                print(f"[Zep] Save failed (non-blocking): {e}")
+        asyncio.create_task(_save_to_zep())
+
     # ── Fast-path: plan queries skip all middleware ───────────────
-    # No nano starter, no PII check, no RAG, no validation, no Zep prefs.
-    # Go directly to the trip planning agent — faster + lower cost.
-    # Zep save happens after streaming — fully non-blocking.
     if request.plan:
         try:
             response_content, timing_info = await get_complete_response(final_message, thread_id, param)
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
-            # ── Save to Zep after response is sent — never blocks streaming ──
-            if request.is_pro:
-                summary = getattr(response_content, 'summary', '') or ''
-                async def _save_plan_to_zep():
-                    await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
-                    await asyncio.to_thread(add_message, role='user', thread_id=thread_id, message=request.message)
-                asyncio.create_task(_save_plan_to_zep())
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
@@ -235,7 +235,6 @@ async def _main_stream(
         query = await summarize_for_rag(final_message)
         return await rag(query=query, reference=request.reference)
 
-    zep_task        = asyncio.create_task(asyncio.to_thread(setup_user_session, request.user_id, thread_id)) if request.is_pro else None
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
     zep_prefs_task  = asyncio.create_task(asyncio.to_thread(get_user_preferences, request.user_id)) if request.user_id else None
@@ -334,10 +333,6 @@ async def _main_stream(
             }
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
-
-    # ── Ensure Zep session is ready before agent calls add_message (pro only) ──
-    if zep_task:
-        await zep_task
 
     # ── Await Zep prefs (in-flight since t=0, inject into agent context) ──────
     zep_prefs = None

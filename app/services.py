@@ -282,12 +282,9 @@ async def stream_agent_to_queue(
       • Error             → Exception instance put into queue
       • Stream complete   → None put into queue  (always sent via finally)
 
-    If is_pro=True: saves user question + agent answer (minus $$$$$ block) to Zep.
+    Zep saves are handled upstream in _main_stream — not here.
     """
     try:
-        if is_pro:
-            add_message(role='user', thread_id=thread_id, message=original_message)
-
         research_further(final_message_with_ref)
 
         if agent_name == 'rag_format_agent':
@@ -349,8 +346,8 @@ async def stream_agent_to_queue(
 async def get_complete_response(message: str, thread_id: str , mode: str) -> tuple[str, dict]:
     """Generates a complete, non-streamed response and provides timing info."""
     start_time = time.time()
-    
-    try:        
+
+    try:
         result = await Runner.run(trip_planning_agent, message) 
         
         # Access the actual response data

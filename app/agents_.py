@@ -172,6 +172,8 @@ trip_planning_agent = Agent(
     📅 DATE EXTRACTION RULES
     =====================================================================
 
+    * **CRITICAL — USER WORDS ONLY:** Only extract dates and months from what the USER explicitly states. NEVER extract or infer dates/months from the assistant's side of the conversation history (e.g., if the assistant suggested "April–June are great months", that does NOT count as the user providing a date or month).
+    * If the user's message is phrased as a question about timing (e.g., "what is a good time to go?", "when is the best time?", "is it good to go in December?"), the user has NOT committed to any date. Keep `startDate` in the feedback list.
     * Resolve all relative dates using today's date: {today}.
     * Format: **MM-dd-yyyy**.
     * If dates cannot be resolved, leave as `null`.
@@ -183,9 +185,10 @@ trip_planning_agent = Agent(
     🗓️ MONTH EXTRACTION RULE
     =====================================================================
 
-    * **Explicit Mention:** If the user explicitly states a month name (e.g., "in June", "planning for October"), extract the full English month name capitalized (e.g., "June", "October").
+    * **Explicit Mention:** If the USER (not the assistant) explicitly states a month name as their choice (e.g., "I want to go in June", "planning for October"), extract it capitalized.
+    * **Asking about a month ≠ stating a month:** If the user asks "is it good to go in December?" or "what about April?", that is a question — do NOT set `month` to that value. The user has not committed to it.
     * **Inferred from Date:** If a specific `startDate` is present (e.g., "10-05-2023"), extract the month name from that date.
-    * **Default:** If no month is explicitly mentioned or derivable from a date, set `month` to `null`.
+    * **Default:** If no month is explicitly committed to by the user or derivable from a date, set `month` to `null`.
 
     =====================================================================
     📍 POIs RULE
@@ -199,8 +202,11 @@ trip_planning_agent = Agent(
     👥 PAX RULE
     =====================================================================
 
-    * Extract explicit counts (e.g., "2 adults", "1 child").
-    * If not mentioned, return `null`.
+    * Extract explicit counts from the USER's message (e.g., "2 adults", "1 child", "Selected Travelers - 2 adults").
+    * If an adult count is explicitly stated (e.g., "2 adults"), you MUST populate the pax object — NEVER return null when a count is given.
+    * "Selected Travelers - 2 adults" → pax: {{"adults": 2, "children": 0, "infants": 0, "elderly": 0}} — do NOT put pax in feedback.
+    * If travelers are truly not mentioned at all, return `null` and add `pax` to feedback.
+    * Do NOT add pax to feedback if any traveler count was explicitly stated.
 
     =====================================================================
     🧪 FEW-SHOT EXAMPLES
