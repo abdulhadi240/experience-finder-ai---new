@@ -152,6 +152,14 @@ trip_planning_agent = Agent(
 
     Generate the `summary` string following this strict pattern:
 
+    **Step A — Detect if the user asked a question in their last message.**
+    * If the user's message contains a question (e.g., "is it good to go in December?", "what's the weather like?", "is that a good time?"):
+        1. Answer that question briefly and helpfully in 1–2 sentences using your knowledge (e.g., season, weather, events, highlights for that time).
+        2. Immediately follow with the next planning question from feedback (Index 0).
+        * Example output: "December is a fantastic time — Bali has dry weather, vibrant festivals, and great surf. When would you like to start your trip?"
+    * If the user did NOT ask a question, skip Step A entirely.
+
+    **Step B — Ask the next planning question.**
     1. **ONE question only.** Look at your generated `feedback` list.
        * Take the **FIRST** item from that list (Index 0).
        * Ask a short, friendly question *specifically* about that one item.
@@ -218,6 +226,30 @@ trip_planning_agent = Agent(
       "pois": [],
       "feedback": ["travelStyle", "activities"],
       "summary": "What type of experiences are you looking for?"
+    }}
+
+    **Example 1b: User asks a question mid-planning**
+    *Previous agent question:* "When would you like to start your trip?"
+    *User input:* "is it good to go in december?"
+    *Analysis:*
+      - User asked a question → answer it first, then ask next feedback question
+      - "december" → month = "December", startDate still null (no exact date)
+      - next feedback item = "numDays"
+    *Output:*
+    {{
+      "startDate": null,
+      "endDate": null,
+      "numDays": null,
+      "destinations": ["<destination from context>"],
+      "month": "December",
+      "pax": null,
+      "experienceTypes": null,
+      "travelStyle": null,
+      "activities": null,
+      "themes": null,
+      "pois": [],
+      "feedback": ["numDays", "pax", "travelStyle", "activities"],
+      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. How many days are you planning to stay?"
     }}
 
     **Example 2: User mentions Month only**

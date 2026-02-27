@@ -301,8 +301,6 @@ async def stream_agent_to_queue(
         prefix_buf  = ""
         prefix_done = False
         suffix_buf  = ""
-        full_answer = ""   # accumulate for Zep (pro users only)
-
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                 chunk = event.data.delta
@@ -331,8 +329,6 @@ async def stream_agent_to_queue(
                 if len(pending) > _SUFFIX_LEN:
                     emit = pending[:-_SUFFIX_LEN]
                     await queue.put(emit)
-                    if is_pro:
-                        full_answer += emit
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
@@ -342,14 +338,8 @@ async def stream_agent_to_queue(
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             if cleaned:
                 await queue.put(cleaned)
-                if is_pro:
-                    full_answer += cleaned
 
-        # ── Save assistant answer to Zep (pro only) — strip $$$$$ metadata block ──
-        if is_pro and full_answer:
-            clean = full_answer.split("$$$$$")[0].strip()
-            if clean:
-                add_message(role='assistant', thread_id=thread_id, message=clean)
+        # Assistant answers are not saved to Zep — only user questions are saved
 
     except Exception as e:
         await queue.put(e)

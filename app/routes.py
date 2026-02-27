@@ -219,8 +219,6 @@ async def _main_stream(
                 async def _save_plan_to_zep():
                     await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
                     await asyncio.to_thread(add_message, role='user', thread_id=thread_id, message=request.message)
-                    if summary:
-                        await asyncio.to_thread(add_message, role='assistant', thread_id=thread_id, message=summary)
                 asyncio.create_task(_save_plan_to_zep())
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
