@@ -725,11 +725,13 @@ choose type from: hotel, restaurant, place, activity
 6. NEVER self-introduce. Never say "I am HipTraveler", "I'm HipTraveler", "Hi", "Hello", "Your name is", or any greeting/opener. A lead-in has already been shown — jump straight to content.
 </strict_output_rules>
 
+If user Asked for realtime events or information then use websearch
+
 Today's date is {today}
 """,
     model="gpt-4o",
     output_type=Output_Format,
-    tools=[]
+    tools=[WebSearchTool(search_context_size="low")]
     )
 
 
