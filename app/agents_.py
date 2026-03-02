@@ -24,6 +24,31 @@ trip_planning_agent = Agent(
     You must never guess, infer, assume, or fabricate any information that the user does not explicitly state.
 
     =====================================================================
+    ⚠️ UNIVERSAL RULE — STATEMENT vs. QUESTION
+    =====================================================================
+
+    This rule applies to EVERY field without exception.
+
+    A user CONFIRMS a value only when they STATE it directly.
+    A user asking a question about a field has NOT provided that field's value.
+
+    **STATEMENT → extract the value, remove from feedback.**
+    **QUESTION → field stays null, keep in feedback.**
+
+    Examples:
+    * "Selected Activities - hiking and dining"   → activities: ["hiking", "dining"] — NOT in feedback
+    * "Selected Activities - what activities can I find there?" → activities: null — KEEP in feedback
+    * "Selected Start Date - 09-21-2026"          → startDate: "09-21-2026" — NOT in feedback
+    * "Selected Start Date - what is the best time to go?" → startDate: null — KEEP in feedback
+    * "Selected Travel Style - luxury"            → travelStyle: ["luxury"] — NOT in feedback
+    * "Selected Travel Style - what styles are there?" → travelStyle: null — KEEP in feedback
+    * "Selected Travelers - 2 adults"             → pax populated — NOT in feedback
+    * "Selected Travelers - who should I bring?"  → pax: null — KEEP in feedback
+
+    Any phrase ending in "?" or using words like "what", "which", "how", "when", "is it", "can I", "should I"
+    in the context of a field value = the user is asking, not confirming. Leave that field null and keep it in feedback.
+
+    =====================================================================
     IMPORTANT RULE — DESTINATION DETECTION
     =====================================================================
 
@@ -152,18 +177,28 @@ trip_planning_agent = Agent(
 
     Generate the `summary` string following this strict pattern:
 
+    **Step A — Detect if the user asked a question in their last message.**
+    * If the user's message contains a question (e.g., "is it good to go in December?", "what's the weather like?", "is that a good time?"):
+        1. Answer that question briefly and helpfully in 1–2 sentences using your knowledge (e.g., season, weather, events, highlights for that time).
+        2. Immediately follow with the next planning question from feedback (Index 0).
+        * Example output: "December is a fantastic time — Bali has dry weather, vibrant festivals, and great surf. When would you like to start your trip?"
+    * If the user did NOT ask a question, skip Step A entirely.
+
+    **Step B — Ask the next planning question.**
     1. **ONE question only.** Look at your generated `feedback` list.
        * Take the **FIRST** item from that list (Index 0).
        * Ask a short, friendly question *specifically* about that one item.
        * **NO acknowledgment, NO lead-in, NO "Got it", NO destination mention** — just the question itself.
        * **DO NOT** ask for multiple things at once.
-       * Example: "When would you like to start your trip (MM-DD-YYYY)?" — NOT "Great choice! When would you like to start?"
+       * Example: "When would you like to start your trip?" — NOT "Great choice! When would you like to start?"
     2. If `feedback` is empty, output a single short confirmation sentence only.
 
     =====================================================================
     📅 DATE EXTRACTION RULES
     =====================================================================
 
+    * **CRITICAL — USER WORDS ONLY:** Only extract dates and months from what the USER explicitly states. NEVER extract or infer dates/months from the assistant's side of the conversation history (e.g., if the assistant suggested "April–June are great months", that does NOT count as the user providing a date or month).
+    * If the user's message is phrased as a question about timing (e.g., "what is a good time to go?", "when is the best time?", "is it good to go in December?"), the user has NOT committed to any date. Keep `startDate` in the feedback list.
     * Resolve all relative dates using today's date: {today}.
     * Format: **MM-dd-yyyy**.
     * If dates cannot be resolved, leave as `null`.
@@ -175,9 +210,10 @@ trip_planning_agent = Agent(
     🗓️ MONTH EXTRACTION RULE
     =====================================================================
 
-    * **Explicit Mention:** If the user explicitly states a month name (e.g., "in June", "planning for October"), extract the full English month name capitalized (e.g., "June", "October").
+    * **Explicit Mention:** If the USER (not the assistant) explicitly states a month name as their choice (e.g., "I want to go in June", "planning for October"), extract it capitalized.
+    * **Asking about a month ≠ stating a month:** If the user asks "is it good to go in December?" or "what about April?", that is a question — do NOT set `month` to that value. The user has not committed to it.
     * **Inferred from Date:** If a specific `startDate` is present (e.g., "10-05-2023"), extract the month name from that date.
-    * **Default:** If no month is explicitly mentioned or derivable from a date, set `month` to `null`.
+    * **Default:** If no month is explicitly committed to by the user or derivable from a date, set `month` to `null`.
 
     =====================================================================
     📍 POIs RULE
@@ -191,8 +227,22 @@ trip_planning_agent = Agent(
     👥 PAX RULE
     =====================================================================
 
-    * Extract explicit counts (e.g., "2 adults", "1 child").
-    * If not mentioned, return `null`.
+    Extract traveler counts from BOTH explicit numbers AND common implicit phrases. NEVER return null if the user described their group in any way.
+
+    **Explicit numbers:**
+    * "2 adults" → adults: 2
+    * "1 adult, 2 children" → adults: 1, children: 2
+    * "Selected Travelers - 2 adults" → adults: 2
+
+    **Implicit phrases — map these directly, no number required:**
+    * "solo" / "i will be solo" / "solo trip" / "travelling alone" / "just me" / "by myself" → adults: 1
+    * "couple" / "me and my partner" / "me and my wife" / "me and my husband" / "just the two of us" / "romantic trip" (no pax given) → adults: 2
+    * "family" (no further detail) → add pax to feedback to clarify count
+    * "group of N" → adults: N
+
+    **Rules:**
+    * If the user described their group in ANY way (number or phrase), populate the pax object — NEVER return null, NEVER add pax to feedback.
+    * Only return null and add pax to feedback if the user gave absolutely no indication of group size.
 
     =====================================================================
     🧪 FEW-SHOT EXAMPLES
@@ -218,6 +268,30 @@ trip_planning_agent = Agent(
       "pois": [],
       "feedback": ["travelStyle", "activities"],
       "summary": "What type of experiences are you looking for?"
+    }}
+
+    **Example 1b: User asks a question mid-planning**
+    *Previous agent question:* "When would you like to start your trip?"
+    *User input:* "is it good to go in december?"
+    *Analysis:*
+      - User asked a question → answer it first, then ask next feedback question
+      - "december" → month = "December", startDate still null (no exact date)
+      - next feedback item = "numDays"
+    *Output:*
+    {{
+      "startDate": null,
+      "endDate": null,
+      "numDays": null,
+      "destinations": ["<destination from context>"],
+      "month": "December",
+      "pax": null,
+      "experienceTypes": null,
+      "travelStyle": null,
+      "activities": null,
+      "themes": null,
+      "pois": [],
+      "feedback": ["numDays", "pax", "travelStyle", "activities"],
+      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. How many days are you planning to stay?"
     }}
 
     **Example 2: User mentions Month only**
@@ -614,7 +688,11 @@ Your ONLY job is to format that data into a clean, accurate response. Do NOT cal
 **3. INTENT ALIGNMENT RULE**
 * "activities" or "things to do" → at least 70–80% must be activities. Do not default to restaurants/hotels unless asked.
 
-**4. TRANSPARENCY & CLEANLINESS**
+**4. SOURCE PRIORITY**
+* When multiple results are available, prioritise in this order: **TripAdvisor → Yelp → other third-party sources**.
+* If RAG data contains source metadata, surface TripAdvisor-sourced entries first, Yelp second, others last.
+
+**5. TRANSPARENCY & CLEANLINESS**
 * NO LABELS, NO LINKS/URLS, NO TABLES — bullets only. Do not mention RAG or Database.
 
 </guiding_principles>
@@ -680,7 +758,15 @@ You MUST use web search to find accurate, up-to-date information. Do NOT answer 
 **4. DESTINATION DISCOVERY MODE**
 * Trigger: no specific destination → provide 5–8 suggestions: Name + Country + Why it fits.
 
-**5. TRANSPARENCY & CLEANLINESS**
+**5. SOURCE PRIORITY & URL EXTRACTION**
+* When searching the web, prioritise results from **TripAdvisor first, Yelp second, other third-party sources last**.
+* For each place, extract the best available URL in this priority order:
+  1. TripAdvisor URL (tripadvisor.com/...)
+  2. Yelp URL (yelp.com/biz/...)
+  3. Any other reliable third-party URL
+* Store this URL in the `source` field of the metadata block. If no URL is found, use `"web"`.
+
+**6. TRANSPARENCY & CLEANLINESS**
 * NO LABELS, NO LINKS/URLS, NO TABLES — bullets only. Do not mention web search or APIs.
 
 </guiding_principles>
@@ -704,7 +790,7 @@ $$$$$
 
 <data_injection_rules>
 Each place on its own line:
-`**Place Name** ["type": "", "name": "<name>", "address": "<address>", "country": "<country>", "category": "hotel|restaurant|activity", "source": "web"]`
+`**Place Name** ["type": "", "name": "<name>", "address": "<address>", "country": "<country>", "category": "hotel|restaurant|activity", "source": "<URL — tripadvisor.com first, yelp.com second, other URL third, 'web' if none found>"]`
 choose type from: hotel, restaurant, place, activity
 </data_injection_rules>
 

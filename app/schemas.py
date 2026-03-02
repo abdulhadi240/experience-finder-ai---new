@@ -16,7 +16,8 @@ class QueryRequest(BaseModel):
     param: str
     threadId: Optional[str]
     old_interactions: Optional[list[Interaction]] = None
-    is_pro: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
+    is_pro: Optional[bool] = False
+    plan: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
     
     
 class Output_Format(BaseModel):
@@ -53,7 +54,7 @@ class global_travel_guardrail(BaseModel):
         
 class Pax(BaseModel):
     """Represents the count of different types of travelers."""
-    adults: int = Field(..., description="Number of adults. Default to 2 for romantic trips or if unspecified.")
+    adults: int = Field(..., description="Number of adults. Infer from context: 'solo'/'alone'/'just me'=1, 'couple'/'romantic'/'two of us'=2, explicit number otherwise.")
     children: int = Field(0, description="Number of children.")
     infants: int = Field(0, description="Number of infants (babies).")
     elderly: int = Field(0, description="Number of elderly travelers.")

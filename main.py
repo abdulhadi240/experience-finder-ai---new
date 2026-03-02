@@ -16,14 +16,10 @@ app = FastAPI(
 # --------------------------------------------
 # CORS Configuration
 # --------------------------------------------
-origins = [
-    "https://qa.hiptraveler.com",
-    "http://localhost:4200",  # local testing
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # liberal for now, restrict later in prod
+    allow_origins=["http://localhost:3000"],        # local dev exact match
+    allow_origin_regex=r"https?://.*\.hiptraveler\.com|https?://hiptraveler\.com",  # all subdomains + root
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
