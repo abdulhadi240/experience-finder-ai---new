@@ -238,11 +238,12 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
     """
     prompt = (
         f"You are HipTraveler AI. User message:\n{message}\n\n"
-        "Output ONE sentence only. Pick based on what the user is saying:\n"
+        "Output ONE sentence only. Pick the correct case:\n"
         "- Unsafe (sexual, hate, off-topic, spam, PII like phone/email): → I can only assist with travel-related topics.\n"
         "- Greeting or user shares their name: → Hi [name]! [one short travel question]\n"
         "- Asking about their own preferences/history/past selections: → Here is what your travel profile shows:\n"
         "- Trip planning / itinerary request: → One short warm acknowledgment, no details, no place names. Example: 'On it — putting your Paris trip together.'\n"
+        "- Real-time / current info query — user asks about: safety right now, current situation, latest news/updates, is it safe, what's happening, travel advisory, weather today, events tonight, open now, current conditions: → ONE short neutral bridge sentence that does NOT state any facts. Just signal you are fetching live info. Examples: 'Let me pull the latest on this.' / 'Checking current conditions for you.' / 'Fetching live updates now.' — NEVER state safety opinions, never say 'now could be a great time', never guess current conditions.\n"
         "- Any other travel query: → 2 warm, engaging sentences about the topic. Share a genuine insight or context that sets the scene. NO list lead-ins ('here are...', 'here are some places') — the main response handles all lists.\n"
         "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to."
     )

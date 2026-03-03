@@ -21,6 +21,38 @@ from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
 
 
+# ─── Real-time query detector ─────────────────────────────────────
+# Routes queries that need live web data to web_search_agent.
+_REALTIME_SIGNALS = [
+    # simple time-now phrases (catches "Dubai right now", "what to do right now", etc.)
+    "right now", "right now?",
+    "currently", "current conditions", "at the moment", "these days", "nowadays",
+    # safety / news
+    "is it safe", "is safe", "safe to travel", "travel safe", "safety",
+    "current situation", "situation now",
+    "latest news", "latest update", "latest updates", "latest situation",
+    "whats happening", "what is happening",
+    "travel advisory", "travel warning", "travel alert",
+    "any conflict", "any danger", "any protests", "any unrest",
+    "is there war", "is there conflict", "is there fighting",
+    # weather
+    "weather today", "current weather", "weather forecast",
+    # events / opening hours
+    "events tonight", "events this week", "events today",
+    "open now", "closing time today",
+    # pricing
+    "ticket price", "entry fee", "how much to enter",
+    # entry / visa
+    "entry requirements", "visa requirements", "border open",
+]
+
+def _is_realtime_query(message: str) -> bool:
+    """Returns True when the query needs live web data, not just RAG place data."""
+    # normalise apostrophes so "what's" and "what\u2019s" both match
+    msg = message.lower().replace("\u2019", "'").replace("\u2018", "'")
+    return any(signal in msg for signal in _REALTIME_SIGNALS)
+
+
 # ─── RAG Helper ──────────────────────────────────────────────────
 
 # Shared async client — one connection pool for all requests, zero thread usage
@@ -350,7 +382,13 @@ async def _main_stream(
         return
 
     # ── Explore / General (isTravelRelated=False) ─────────────────
-    if rag_data:
+    is_realtime = _is_realtime_query(request.message)
+
+    # Skip RAG injection for real-time queries — web_search_agent expects
+    # no RAG data and its instruction says "RAG returned nothing".
+    # Injecting irrelevant place chunks would cause it to format places
+    # instead of fetching live information.
+    if rag_data and not is_realtime:
         final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
 
     if zep_prefs:
@@ -364,9 +402,19 @@ async def _main_stream(
         "If [USER_PREFERENCES] data is present and the query is about preferences, answer specifically from that data. [/INSTRUCTION]"
     )
 
-    # chunks present = RAG has real content → format agent; no chunks = fall back to web
-    # memory queries have no RAG chunks — rag_format_agent will answer from [USER_PREFERENCES]
-    agent_name = "rag_format_agent" if (rag_chunks or validation_result.final_output.isMemoryQuery) else "web_search_agent"
+    # Routing:
+    #  - memory queries        → rag_format_agent  (answers from [USER_PREFERENCES])
+    #  - real-time queries     → web_search_agent  (mandatory live search, no RAG noise)
+    #  - RAG chunks present    → rag_format_agent
+    #  - no chunks, not r-t    → web_search_agent
+    if validation_result.final_output.isMemoryQuery:
+        agent_name = "rag_format_agent"
+    elif is_realtime:
+        agent_name = "web_search_agent"
+    elif rag_chunks:
+        agent_name = "rag_format_agent"
+    else:
+        agent_name = "web_search_agent"
 
     token_queue = asyncio.Queue()
     asyncio.create_task(
