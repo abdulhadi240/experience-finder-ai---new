@@ -6,6 +6,7 @@ pydantic-settings
 
 # AI and data processing
 openai         # keeps opik compatible
+pycountry
 tavily-python
 openai-agents[viz]
 zep-cloud>=3.10.0

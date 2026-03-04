@@ -1,9 +1,11 @@
 import asyncio
 import json
+import re
 import time
-from typing import AsyncGenerator, Dict, Any
+from typing import AsyncGenerator, Dict, Any, Optional
 
 import httpx
+import pycountry
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from agents import Runner
@@ -19,6 +21,7 @@ from .services import (
 )
 from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
+from .region_metadata import REGION_METADATA
 
 
 # ─── Real-time query detector ─────────────────────────────────────
@@ -51,6 +54,65 @@ def _is_realtime_query(message: str) -> bool:
     # normalise apostrophes so "what's" and "what\u2019s" both match
     msg = message.lower().replace("\u2019", "'").replace("\u2018", "'")
     return any(signal in msg for signal in _REALTIME_SIGNALS)
+
+
+# ─── Instant Location Scope Gate ─────────────────────────────────
+
+def _check_location_scope(message: str, reference: str) -> Optional[str]:
+    """
+    Instant Python-only location scope gate — no LLM, no I/O.
+
+    Algorithm:
+      1. Look up REGION_METADATA[reference]. If absent → allow (unscoped portal).
+      2. If query mentions portal's country, any known location, or any known
+         experience keyword → allow.
+      3. Scan 1-gram and 2-gram tokens with pycountry. If a token resolves to a
+         country that differs from the portal's country code → block.
+      4. No foreign country detected → allow (generic query).
+
+    Returns None to allow, or a user-facing string to block.
+    """
+    region_meta = REGION_METADATA.get(reference)
+    if not region_meta:
+        return None  # no scope restriction for this reference
+
+    q_lower = message.lower()
+    portal_country_cd = (region_meta.get("countryCd") or "").upper()
+
+    # ── Pass 1: explicit in-scope match ──────────────────────────
+    if region_meta.get("country", "").lower() in q_lower:
+        return None
+    for loc in region_meta.get("locations", []):
+        if loc.lower() in q_lower:
+            return None
+    for exp in region_meta.get("experiences", []):
+        if exp.lower() in q_lower:
+            return None
+
+    # ── Pass 2: detect a foreign country name ────────────────────
+    # Build 1-grams and 2-grams from the raw message
+    words = re.findall(r"[A-Za-z\-\']+", message)
+    candidates: list[str] = list(words)
+    for i in range(len(words) - 1):
+        candidates.append(f"{words[i]} {words[i + 1]}")
+
+    for token in candidates:
+        token = token.strip(" '-")
+        if not token:
+            continue
+        try:
+            country_obj = pycountry.countries.lookup(token)
+            if country_obj.alpha_2 != portal_country_cd:
+                portal_country = region_meta.get("country", "this destination")
+                return (
+                    f"This assistant is set up for {portal_country}. "
+                    f"Please ask about experiences, places, or activities in {portal_country}."
+                )
+        except LookupError:
+            pass  # token doesn't match any country — continue
+
+    # ── Pass 3: no location signals at all → generic query → allow ─
+    return None
 
 
 # ─── RAG Helper ──────────────────────────────────────────────────
@@ -235,6 +297,17 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
+    # ── Instant location scope gate (pure Python, no LLM, no I/O) ──
+    scope_error = _check_location_scope(request.message, request.reference)
+    if scope_error:
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+        for i, word in enumerate(scope_error.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'scope_gate'})}\n\n"
+        return
+
     # ── Save user question to Zep — always, non-blocking, never gates anything ──
     if request.user_id:
         async def _save_to_zep():
@@ -318,19 +391,9 @@ async def _main_stream(
     except Exception as e:
         validation_result = e
 
-    # ── RAG check ────────────────────────────────────────────────
-    note = ""
+    # ── RAG result (scope note check moved to instant gate above) ──
     if isinstance(rag_result, Exception):
         print(f"RAG failed, falling back: {rag_result}")
-    else:
-        note = rag_result.get("note", "")
-
-    if "This portal is scoped to" in note and "Please ask about that destination" in note:
-        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
-        for i, word in enumerate(note.split()):
-            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
-        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'rag_note'})}\n\n"
-        return
 
     # ── Validation check ─────────────────────────────────────────
     if isinstance(validation_result, Exception):
