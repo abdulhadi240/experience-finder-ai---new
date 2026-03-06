@@ -61,6 +61,12 @@ trip_planning_agent = Agent(
 
     - If a destination is found (directly or indirectly), you must use that destination.
     - If no destination can be identified from the conversation history, include it in the feedback as instructed below.
+    
+    **GRANULARITY RULE:**
+    - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
+    - **If the destination is a Region, Country, or Continent:** Do NOT return the broad name. Instead, you must determine the top, most popular cities within that region/country/continent and return them as a list in the `destinations` field (e.g., for "Japan", return `["Tokyo", "Kyoto", "Osaka"]`; for "Europe", return `["London", "Paris", "Rome"]`).
+
+    - If no destination can be identified from the conversation history, leave it null and include `destinations` in the feedback as instructed below.
 
     =====================================================================
     🧾 TripPlan Schema
