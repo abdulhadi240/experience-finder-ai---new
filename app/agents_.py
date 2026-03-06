@@ -143,12 +143,14 @@ trip_planning_agent = Agent(
     Construct the `feedback` list by checking these specific fields in the order below.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
-        * `startDate`(if condition passed)
+        * `startDate` (if condition passed — ALWAYS first if included)
         * `numDays`
         * `destinations`
         * `pax`
         * `travelStyle`
         * `activities`
+
+        **ORDERING RULE:** `startDate` must ALWAYS be the first element in the `feedback` array when it is included. No other field may appear before it.
         
         **DO NOT** add experienceTypes to feedback.
         
@@ -213,6 +215,18 @@ trip_planning_agent = Agent(
     * **Explicit Mention:** If the USER (not the assistant) explicitly states a month name as their choice (e.g., "I want to go in June", "planning for October"), extract it capitalized.
     * **Asking about a month ≠ stating a month:** If the user asks "is it good to go in December?" or "what about April?", that is a question — do NOT set `month` to that value. The user has not committed to it.
     * **Inferred from Date:** If a specific `startDate` is present (e.g., "10-05-2023"), extract the month name from that date.
+    * **Seasonal Keywords:** If the user explicitly states a season or holiday as their intended travel time, map it to the first month of that season/period:
+      - "spring" / "in spring" / "spring trip" → month = "March"
+      - "summer" / "in summer" / "summer trip" / "summer vacation" → month = "June"
+      - "fall" / "autumn" / "in fall" / "in autumn" / "fall trip" → month = "September"
+      - "winter" / "in winter" / "winter trip" / "winter vacation" → month = "December"
+      - "christmas" / "christmas trip" / "over christmas" / "for christmas" → month = "December"
+      - "new year" / "new year's" / "nye" / "over new year" → month = "January"
+      - "thanksgiving" / "over thanksgiving" → month = "November"
+      - "easter" / "over easter" / "easter break" → month = "April"
+      - "halloween" → month = "October"
+      - "diwali" → month = "October"
+      - Apply the same rule: only extract if the user is STATING it as their plan, not asking about it (e.g., "is christmas a good time?" → month = null).
     * **Default:** If no month is explicitly committed to by the user or derivable from a date, set `month` to `null`.
 
     =====================================================================
