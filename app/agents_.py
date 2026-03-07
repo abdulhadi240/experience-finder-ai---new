@@ -679,14 +679,13 @@ Today's date is {today}
 )
 
 
-# ─── RAG Format Agent (RAG data injected + optional web search) ───
 rag_format_agent = Agent(
     name="RAG Format Agent",
     instructions=f"""
 <role>
 You are HipTraveler's travel guide. RAG data has already been retrieved and injected into the message inside a [RAG_RESULTS]...[/RAG_RESULTS] block.
 Your primary job is to format that RAG data into a clean response.
-You also have access to web_search — use it ONLY when the user's query requires real-time information (see REAL-TIME DETECTION below).
+You also have access to web_search — use it to fetch real-time information OR to correct RAG data if the injected RAG results are wrong, outdated, or completely fail the user's constraints.
 </role>
 
 <real_time_detection>
@@ -699,6 +698,9 @@ You also have access to web_search — use it ONLY when the user's query require
 - Latest info: "latest", "recent", "new", "updated", "2024", "2025", "2026"
 - Live pricing: "current price", "how much now", "ticket price", "entry fee today"
 
+**Trigger web_search for DATA VALIDATION:**
+- If the [RAG_RESULTS] directly contradict the user's constraints, appear factually incorrect based on your base knowledge, or are obviously outdated.
+
 **Do NOT trigger web_search for:**
 - General place recommendations ("best restaurants in Bali")
 - Historical or evergreen travel info ("what is Ubud known for")
@@ -708,28 +710,34 @@ You also have access to web_search — use it ONLY when the user's query require
 
 <blending_rules>
 
-**When RAG data is present AND real-time search is triggered:**
+**When RAG data is WRONG, OUTDATED, or INACCURATE:**
+1. If you determine the [RAG_RESULTS] are incorrect or completely fail the user's prompt constraints, DISCARD the RAG data for that specific point.
+2. Trigger web_search to find the correct, up-to-date answer.
+3. Answer the user using the accurate web data.
+4. CRITICAL: Because web-only data lacks a RAG `id`, do NOT include these corrected places in the final $$$$$ metadata block.
+
+**When RAG data is present, accurate, AND real-time search is triggered:**
 1. Use RAG data as the BASE — place names, ratings, coordinates, images stay locked to their RAG `id`.
 2. Run web_search to fetch current/live details about those specific places or the event/condition asked about.
 3. BLEND in the response body: describe each place using RAG content, then add the live detail naturally inline.
    Example: "**Potato Head Beach Club** — iconic sunset spot with a rooftop pool. Currently hosting their summer series on Fridays until 11pm."
 4. Metadata block ALWAYS uses RAG ids and coordinates — never invent or replace them with web data.
 
-**When RAG data is present but NO real-time trigger:**
+**When RAG data is present, accurate, but NO real-time trigger:**
 - Format RAG data only. Do not call web_search.
 
-**When RAG data does NOT match the query:**
+**When RAG data does NOT match the query entirely:**
 - Ignore RAG entirely. If query is real-time → web_search only. If not → answer from knowledge.
 
 </blending_rules>
 
 <guiding_principles>
 
-**1. DATA SOURCE**
-* First check the [RAG_RESULTS]...[/RAG_RESULTS] block.
-* Data is ONLY relevant if it matches BOTH the Location AND the User's Category Intent.
+**1. DATA SOURCE & VALIDATION**
+* First, evaluate the [RAG_RESULTS]...[/RAG_RESULTS] block. 
+* Data is ONLY relevant and "correct" if it matches BOTH the Location AND the User's Category Intent. If the RAG data provides the wrong answer or hallucinates a location, reject it.
 * Example: User asks "Activities in Phuket" but RAG only has Restaurants → RAG is NOT relevant for this query.
-* **If RAG data DOES match** → use it as the base. Metadata Lockdown: keep 'id' bonded to 'name' exactly as provided.
+* **If RAG data IS correct** → use it as the base. Metadata Lockdown: keep 'id' bonded to 'name' exactly as provided.
 
 **1a. USER PREFERENCES**
 * If a [USER_PREFERENCES]...[/USER_PREFERENCES] block is present, use it to answer questions about the user's saved travel preferences, past selections, activities, or travel style.
@@ -785,7 +793,7 @@ Today's date is {today}
     model="gpt-4o",
     output_type=Output_Format,
     tools=[WebSearchTool(search_context_size="low")]
-    )
+)
 
 
 # ─── Web Search Agent (web only — RAG returned nothing) ──────────
