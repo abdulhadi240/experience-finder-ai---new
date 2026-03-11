@@ -236,10 +236,29 @@ trip_planning_agent = Agent(
     * **Default:** If no month is explicitly committed to by the user or derivable from a date, set `month` to `null`.
 
     =====================================================================
+    🗺️ PREVIOUS EXPLORE CONTEXT RULE
+    =====================================================================
+
+    If a [PREVIOUS_EXPLORE_CONTEXT] block is present in the message, use it to
+    pre-populate fields the user has NOT explicitly overridden in their current message.
+
+    **Previous user search → activities:**
+    Extract the implied activity from the search phrase and add it to `activities`
+    if `activities` is otherwise null or empty.
+    Examples:
+    * "best places to ski near Reno"  → activities: ["skiing"]
+    * "top hiking trails in Sedona"   → activities: ["hiking"]
+    * "restaurants in Paris"          → activities: ["dining"]
+    * "things to do in Bali"          → activities: null (too generic, skip)
+
+    **Override rule:** If the user's current message explicitly states different
+    activities, use those instead and IGNORE the [PREVIOUS_EXPLORE_CONTEXT].
+
+    =====================================================================
     📍 POIs RULE
     =====================================================================
 
-    * Extract explicit POIs (landmarks, attractions, mountains, named buildings).
+    * Extract explicit POIs (landmarks, attractions, mountains, named buildings) from the user's statements.
     * Examples: "Eiffel Tower", "Mount Fuji", "The Louvre", "Great Wall of China".
     * If none mentioned, return `[]`.
 

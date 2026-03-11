@@ -150,6 +150,52 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
         raise Exception(f"RAG HTTP error: {e}")
 
 
+# ─── Explore Context Extractor ───────────────────────────────────
+
+def _extract_explore_context(old_interactions) -> tuple[str, list[str]]:
+    """
+    Parses the most recent explore response.
+
+    Returns:
+      - context_str : a [PREVIOUS_EXPLORE_CONTEXT] block for the trip planner (activity hint)
+      - pois        : list of place names extracted from the previous explore response.
+                      These are injected directly into the TripPlan result in Python —
+                      we do NOT rely on the LLM to populate pois from context, because
+                      the UNIVERSAL RULE blocks extraction from assistant-side text.
+    """
+    if not old_interactions:
+        return "", []
+
+    last = old_interactions[0]
+
+    print(f"[EXPLORE_CONTEXT] last.question={last.question!r}")
+    print(f"[EXPLORE_CONTEXT] last.answer[:300]={last.answer[:300]!r}")
+
+    # ── Extract place names ───────────────────────────────────────
+    # Prefer $$$$$ metadata block (RAG) — "name" values are authoritative
+    pois: list[str] = []
+    if "$$$$$" in last.answer:
+        parts = last.answer.split("$$$$$")
+        if len(parts) >= 2:
+            metadata_block = parts[1]
+            pois = re.findall(r'"name"\s*:\s*"([^"]+)"', metadata_block)
+    if not pois:
+        # web_search_agent — no metadata block, extract **Bold Place Names** from text
+        pois = re.findall(r'\*\*([^*]+)\*\*', last.answer)
+
+    # ── Build context string for activity hint only ───────────────
+    original_query = (last.question or "").strip()
+    if not original_query:
+        return "", pois
+
+    context_str = (
+        "\n\n[PREVIOUS_EXPLORE_CONTEXT]\n"
+        f"Previous user search: {original_query}\n"
+        "[/PREVIOUS_EXPLORE_CONTEXT]"
+    )
+    return context_str, pois
+
+
 # ─── Streaming-with-starter generator (isTravelRelated=False only) ──
 
 async def streaming_with_loading(
@@ -321,7 +367,12 @@ async def _main_stream(
     # ── Fast-path: plan queries skip all middleware ───────────────
     if request.plan:
         try:
-            response_content, timing_info = await get_complete_response(final_message, thread_id, param)
+            ctx_str, ctx_pois = _extract_explore_context(request.old_interactions)
+            print(f"[EXPLORE_CONTEXT] fast-path | pois={ctx_pois} | block={ctx_str!r}")
+            enriched = final_message + ctx_str
+            response_content, timing_info = await get_complete_response(enriched, thread_id, param)
+            if ctx_pois and not response_content.pois:
+                response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -438,7 +489,12 @@ async def _main_stream(
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     if validation_result.final_output.isTravelRelated:
         try:
-            response_content, timing_info = await get_complete_response(final_message, thread_id, param)
+            ctx_str, ctx_pois = _extract_explore_context(request.old_interactions)
+            print(f"[EXPLORE_CONTEXT] validation-path | pois={ctx_pois} | block={ctx_str!r}")
+            enriched = final_message + ctx_str
+            response_content, timing_info = await get_complete_response(enriched, thread_id, param)
+            if ctx_pois and not response_content.pois:
+                response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
