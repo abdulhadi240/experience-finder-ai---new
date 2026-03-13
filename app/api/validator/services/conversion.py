@@ -125,7 +125,7 @@ INSTRUCTIONS:
 6. Generate a unique id using the place_id from maps_data or create a descriptive one
 7. Determine category based on the research content (e.g., "Restaurant", "Attraction", "Hip Place", "Nature & Parks", "Food & Dining")
 8. Use the first citation as source
-9. Extract or create a compelling title for the place/topic
+9. Use the exact place name as the title (e.g., "Northstar California Resort", "Eiffel Tower") - do NOT add descriptive subtitles or colons
 10. Full Provided research
 11. Extract region_code from address_components (state/province/administrative_area_level_1)
 12. Create tags as a comma-separated string with relevant keywords from the research
@@ -135,7 +135,7 @@ IMPORTANT:
 - If maps_data is null or missing, extract location info from the location string
 - If specific details are missing, make reasonable inferences from the research text
 - Ensure all required fields are filled
-- The title should be attractive and descriptive
+- The title must be just the place name, no subtitles or descriptive suffixes after a colon
 - Content should be concise but informative
 {'- EXCLUDE all information mentioned in the EXCLUSION INSTRUCTION above' if rag_context else ''}
 
