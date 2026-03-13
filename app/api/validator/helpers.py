@@ -161,7 +161,8 @@ async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict
     rag_url = "https://rag.hiptraveler.com/upsert"
     headers = {
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Authorization": "Bearer 96717f5a-e562-4fd5-a14c-499794e8328f"
     }
 
     try:
