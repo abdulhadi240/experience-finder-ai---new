@@ -125,8 +125,11 @@ INSTRUCTIONS:
 6. Generate a unique id using the place_id from maps_data or create a descriptive one
 7. Determine category based on the research content (e.g., "Restaurant", "Attraction", "Hip Place", "Nature & Parks", "Food & Dining")
 8. Use the first citation as source
-9. Use the exact place name as the title (e.g., "Northstar California Resort", "Eiffel Tower") - do NOT add descriptive subtitles or colons
-10. Full Provided research
+9. TITLE RULE - CRITICAL: Use ONLY the exact proper name of the specific place as the title.
+   - CORRECT examples: "Gary Danko", "Mall of America", "Eiffel Tower", "Nobu Miami"
+   - WRONG examples: "Top Dining Experiences in Orlando", "Diverse Dining in San Francisco", "Mall of America: A Premier Shopping Destination"
+   - NEVER use descriptive phrases, category summaries, or add subtitles after a colon
+10. MULTIPLE PLACES RULE - CRITICAL: If the research mentions MULTIPLE specific places (e.g., several restaurants, hotels, attractions), you MUST create ONE separate result entry per individual place. Do NOT merge them into a single generic entry. Each entry gets the exact name of that specific place as its title.
 11. Extract region_code from address_components (state/province/administrative_area_level_1)
 12. Create tags as a comma-separated string with relevant keywords from the research
 13. Include the original query
@@ -135,8 +138,9 @@ IMPORTANT:
 - If maps_data is null or missing, extract location info from the location string
 - If specific details are missing, make reasonable inferences from the research text
 - Ensure all required fields are filled
-- The title must be just the place name, no subtitles or descriptive suffixes after a colon
-- Content should be concise but informative
+- The title MUST be just the specific place name — never a descriptive summary or category label
+- Content should be concise but informative, focused on the specific place
+- When research covers multiple places, produce multiple result objects (one per place)
 {'- EXCLUDE all information mentioned in the EXCLUSION INSTRUCTION above' if rag_context else ''}
 
 OUTPUT FORMAT:

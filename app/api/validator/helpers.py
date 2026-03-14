@@ -532,71 +532,92 @@ async def process_query_research(
         )
 
         if formatted_data_list:
-            formatted_data = formatted_data_list[0].model_dump()
-
             # ── Override source with best citation (TripAdvisor → Yelp → other) ──
             best_src = pick_best_citation(result.get("citations", []))
-            if best_src:
-                formatted_data["source"] = best_src
-                print(f"🔗 Source set to: {best_src}")
 
-            # ============================================
-            # SCORE-BASED ROUTING:
-            # Score >= 2: Save to Supabase AND upsert to RAG
-            # Score == 1: Only save to Supabase
-            # Score == 0: Already skipped above
-            # ============================================
-            print(f"\n{'📊'*40}")
-            print(f"📊 SCORE-BASED ROUTING")
-            print(f"{'📊'*40}")
-            print(f"📊 Score Value: {score_value}/3")
+            # Process all converted results (may be multiple when research covers multiple places)
+            all_formatted = []
+            for item in formatted_data_list:
+                formatted_data = item.model_dump()
 
-            formatted_data["score_value"] = score_value
-            formatted_data["google_maps_place_id"] = maps_data.get("place_id") if maps_data else None
-            if place_image_url:
-                formatted_data["image"] = place_image_url
+                if best_src:
+                    formatted_data["source"] = best_src
 
-            if skip_storage:
-                print(f"📊 Action: Read-only mode (skip_storage=True) — no RAG upsert, no Supabase insert")
-                print(f"{'📊'*40}\n")
-                formatted_data["rag_upserted"] = False
-                formatted_data["db_id"] = None
+                # ── Per-place Google Maps lookup using specific title + city ──
+                place_maps_data = maps_data  # fall back to city-level if lookup fails
+                place_image = place_image_url
 
-            elif score_value >= 2:
-                print(f"📊 Action: Upsert to RAG only (skip database)")
-                print(f"{'📊'*40}\n")
+                place_title = formatted_data.get("title", "")
+                place_city = formatted_data.get("city", "")
+                if api_key and place_title and place_city:
+                    specific_query = f"{place_title}, {place_city}"
+                    print(f"🗺️  Looking up specific place: '{specific_query}'")
+                    specific_maps = await get_google_maps_data(specific_query, api_key)
+                    if specific_maps and specific_maps.get("place_id"):
+                        place_maps_data = specific_maps
+                        print(f"✅ Specific place found: place_id={specific_maps['place_id']}")
+                        place_image = await get_place_photo_url(specific_maps["place_id"], api_key)
+                        # Update lat/lng from specific place
+                        geom = specific_maps.get("geometry", {}).get("location", {})
+                        if geom.get("lat"):
+                            formatted_data["latitude"] = str(geom["lat"])
+                        if geom.get("lng"):
+                            formatted_data["longitude"] = str(geom["lng"])
+                        # Update meta_obj location with specific address
+                        if specific_maps.get("formatted_address"):
+                            formatted_data.setdefault("meta_obj", {})["location"] = specific_maps["formatted_address"]
+                    else:
+                        print(f"⚠️  Specific place not found for '{specific_query}', using city-level maps data")
 
-                # Upsert to RAG only - no database insert
-                rag_success = await upsert_to_rag(formatted_data, maps_data)
-                formatted_data["rag_upserted"] = rag_success
-                formatted_data["db_id"] = None
-                if rag_success:
-                    print(f"✅ Successfully upserted to RAG")
-                else:
-                    print(f"⚠️  Failed to upsert to RAG")
+                # ============================================
+                # SCORE-BASED ROUTING
+                # ============================================
+                print(f"\n{'📊'*40}")
+                print(f"📊 SCORE-BASED ROUTING — title: '{place_title}'")
+                print(f"{'📊'*40}")
+                print(f"📊 Score Value: {score_value}/3")
 
-            elif score_value >= 1:
-                print(f"📊 Action: Save to Supabase only (score too low for RAG)")
-                print(f"{'📊'*40}\n")
+                formatted_data["score_value"] = score_value
+                formatted_data["google_maps_place_id"] = place_maps_data.get("place_id") if place_maps_data else None
+                if place_image:
+                    formatted_data["image"] = place_image
 
-                # Only save to Supabase
-                try:
-                    db_record = await supabase_service.insert_research_insight(formatted_data)
-                    formatted_data["db_id"] = db_record.get("id")
-                    formatted_data["created_at"] = db_record.get("created_at")
-                    print(f"✅ Successfully saved to Supabase with ID: {db_record.get('id')}")
-                except Exception as e:
+                if skip_storage:
+                    print(f"📊 Action: Read-only mode (skip_storage=True) — no RAG upsert, no Supabase insert")
+                    formatted_data["rag_upserted"] = False
                     formatted_data["db_id"] = None
-                    formatted_data["db_error"] = str(e)
-                    print(f"⚠️  Error saving to Supabase: {e}")
 
-                formatted_data["rag_upserted"] = False
-            else:
-                print(f"📊 Action: Skip (score is 0)")
+                elif score_value >= 2:
+                    print(f"📊 Action: Upsert to RAG only (skip database)")
+                    rag_success = await upsert_to_rag(formatted_data, place_maps_data)
+                    formatted_data["rag_upserted"] = rag_success
+                    formatted_data["db_id"] = None
+                    if rag_success:
+                        print(f"✅ Successfully upserted to RAG: '{place_title}'")
+                    else:
+                        print(f"⚠️  Failed to upsert to RAG: '{place_title}'")
+
+                elif score_value >= 1:
+                    print(f"📊 Action: Save to Supabase only (score too low for RAG)")
+                    try:
+                        db_record = await supabase_service.insert_research_insight(formatted_data)
+                        formatted_data["db_id"] = db_record.get("id")
+                        formatted_data["created_at"] = db_record.get("created_at")
+                        print(f"✅ Saved to Supabase: '{place_title}' ID={db_record.get('id')}")
+                    except Exception as e:
+                        formatted_data["db_id"] = None
+                        formatted_data["db_error"] = str(e)
+                        print(f"⚠️  Error saving to Supabase: {e}")
+                    formatted_data["rag_upserted"] = False
+                else:
+                    print(f"📊 Action: Skip (score is 0)")
+                    formatted_data["rag_upserted"] = False
+
                 print(f"{'📊'*40}\n")
-                formatted_data["rag_upserted"] = False
+                all_formatted.append(formatted_data)
 
-            return formatted_data
+            # Return the first result for backwards compatibility (callers expect a single dict)
+            return all_formatted[0] if len(all_formatted) == 1 else all_formatted[0]
         return conversion_input["results"][0]
     except Exception as e:
         print(f"\n❌ Error converting data with OpenAI: {e}")
