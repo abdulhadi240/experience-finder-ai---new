@@ -76,7 +76,7 @@ trip_planning_agent = Agent(
     class TripPlan(BaseModel):
         startDate: Optional[str] = Field(None, description="Start date in MM-dd-yyyy format.")
         endDate: Optional[str] = Field(None, description="End date in MM-dd-yyyy format.")
-        numDays: Optional[int] = Field(None, description="Trip duration in days.")
+        numDays: Optional[int] = Field(None, description="Trip duration in days. Auto-calculated from startDate + endDate. Never added to feedback.")
         destinations: list[str] = Field(..., description="Explicitly mentioned destinations.")
         month: Optional[str] = Field(None, description="Explicitly mentioned month (e.g. 'October'). Null if not mentioned.")
         pax: Pax = Field(..., description="Traveler counts. Null if not mentioned.")
@@ -123,24 +123,12 @@ trip_planning_agent = Agent(
     📊 numDays EXTRACTION RULES
     =====================================================================
 
-    Extract the number of trip days ONLY from **explicit numeric values**. Never guess or infer duration from casual/vague language.
+    Population rules (in priority order):
+    1. **Both dates present**: If `startDate` and `endDate` are both set, calculate `numDays = endDate - startDate` (inclusive, i.e. number of days between the two dates).
+    2. **Explicit number stated**: If the user says "5 days", "11-15 days" (use lower bound: 11), etc., set `numDays` accordingly.
+    3. **Vague or not mentioned**: Set `numDays: null`. Add `numDays` to feedback **only after `startDate`** — it must never appear before `startDate` in the feedback list.
 
-    1. **Exact number**: "5 days" → `numDays: 5`
-    2. **Range given**: If the user provides a numeric range (e.g., "11-15 days", "10 to 14 days", "between 3 and 5 days"), use the **lower bound** of the range.
-       - "11-15 days" → `numDays: 11`
-       - "5-7 days" → `numDays: 5`
-       - "between 10 and 14 days" → `numDays: 10`
-    3. **Calculable from dates**: If `startDate` and `endDate` are both present, calculate `numDays = endDate - startDate`.
-    4. **Not mentioned or only vague language**: If the user does NOT provide an explicit number or numeric range, set `numDays: null`. This includes casual phrases like:
-       - "a couple of days"
-       - "a few days"
-       - "some days"
-       - "for a while"
-       - "a short trip"
-       - "a long trip"
-       These are **NOT** valid inputs for numDays. Do NOT convert them to numbers. Set `numDays: null` and include `numDays` in `feedback`.
-
-    **IMPORTANT:** Only populate `numDays` when you have an actual number or numeric range from the user. When in doubt, leave it `null`.
+    **IMPORTANT:** If `startDate` is also null and not excluded by a negative constraint, `startDate` MUST appear in feedback before `numDays`.
 
     =====================================================================
     🧩 FEEDBACK GENERATION RULES
@@ -150,15 +138,15 @@ trip_planning_agent = Agent(
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
         * `startDate` (if condition passed — ALWAYS first if included)
-        * `numDays`
+        * `numDays` (if null and not calculable — ALWAYS second, only after `startDate`)
         * `destinations`
         * `pax`
         * `travelStyle`
         * `activities`
 
-        **ORDERING RULE:** `startDate` must ALWAYS be the first element in the `feedback` array when it is included. No other field may appear before it.
-        
-        **DO NOT** add experienceTypes to feedback.
+        **ORDERING RULE:** `startDate` must ALWAYS be the first element in the `feedback` array when it is included. `numDays` must ALWAYS come immediately after `startDate` when both are in feedback. No other field may appear before `startDate`, and `numDays` may never appear before `startDate`.
+
+        **DO NOT** add `experienceTypes` to feedback.
         
 
     **Step 2 — Conditional Field: `startDate`**
@@ -173,6 +161,7 @@ trip_planning_agent = Agent(
         * `pois`
         * `endDate`
         * `month`
+        * `experienceTypes`
 
     **Step 4 — Final Validation:**
         * Re-read the user input one more time.
@@ -314,8 +303,9 @@ trip_planning_agent = Agent(
     *User input:* "is it good to go in december?"
     *Analysis:*
       - User asked a question → answer it first, then ask next feedback question
-      - "december" → month = "December", startDate still null (no exact date)
-      - next feedback item = "numDays"
+      - "december" → month = "December", startDate still null (user did not commit to a date — this was a question)
+      - No date refusal → startDate goes in feedback, and must be FIRST
+      - next feedback item = "startDate" (always first), then "numDays"
     *Output:*
     {{
       "startDate": null,
@@ -329,15 +319,15 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["numDays", "pax", "travelStyle", "activities"],
-      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. How many days are you planning to stay?"
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
+      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. When would you like to start your trip?"
     }}
 
     **Example 2: User mentions Month only**
     *Input:* "Trip to Paris in October."
     *Analysis:*
-      - No date refusal → startDate can go in feedback
-      - numDays not mentioned → goes in feedback
+      - No date refusal → startDate can go in feedback, and MUST be first
+      - numDays not mentioned → goes in feedback, AFTER startDate
       - Month = "October"
     *Output:*
     {{
@@ -352,8 +342,8 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": [ "numDays", "startDate","pax", "travelStyle", "activities"],
-      "summary": "How many travelers will be joining this trip?"
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
+      "summary": "When would you like to start your trip?"
     }}
 
     **Example 3: User gives a day range and refuses dates**
@@ -386,8 +376,8 @@ trip_planning_agent = Agent(
     **Example 4: User uses vague language only, no explicit number**
     *Input:* "I want to visit Japan for a few days, 2 adults."
     *Analysis:*
-      - "a few days" is vague, NOT a numeric value → numDays = null → add to feedback
-      - No date refusal → startDate can go in feedback
+      - "a few days" is vague, NOT a numeric value → numDays = null → add to feedback AFTER startDate
+      - No date refusal → startDate can go in feedback, and MUST be first
     *Output:*
     {{
       "startDate": null,
@@ -401,8 +391,8 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["numDays", "startDate", "travelStyle", "activities"],
-      "summary": "What type of experiences are you hoping for?"
+      "feedback": ["startDate", "numDays", "travelStyle", "activities"],
+      "summary": "When would you like to start your trip?"
     }}
 
     =====================================================================
@@ -703,52 +693,22 @@ rag_format_agent = Agent(
     instructions=f"""
 <role>
 You are HipTraveler's travel guide. RAG data has already been retrieved and injected into the message inside a [RAG_RESULTS]...[/RAG_RESULTS] block.
-Your primary job is to format that RAG data into a clean response.
-You also have access to web_search — use it to fetch real-time information OR to correct RAG data if the injected RAG results are wrong, outdated, or completely fail the user's constraints.
+Your job is to format that RAG data into a clean, helpful response. You rely solely on RAG data and your base travel knowledge.
 </role>
 
-<real_time_detection>
+<data_handling_rules>
 
-**Trigger web_search when the query contains ANY of these signals:**
-- Time-sensitive words: "now", "today", "tonight", "this week", "this weekend", "tomorrow", "currently", "right now", "open now"
-- Live status: "is it open", "hours today", "what time does", "still open", "closing time"
-- Current conditions: "weather", "forecast", "temperature", "busy", "crowded"
-- Upcoming events: "events", "festival", "concert", "show", "exhibition", "happening"
-- Latest info: "latest", "recent", "new", "updated", "2024", "2025", "2026"
-- Live pricing: "current price", "how much now", "ticket price", "entry fee today"
+**When RAG data is present and relevant:**
+- Use it as the primary source. Place names, ratings, coordinates, and images stay locked to their RAG `id`.
 
-**Trigger web_search for DATA VALIDATION:**
-- If the [RAG_RESULTS] directly contradict the user's constraints, appear factually incorrect based on your base knowledge, or are obviously outdated.
+**When RAG data does NOT match the query or is irrelevant:**
+- Ignore the RAG data. Answer from your base travel knowledge instead.
+- Do NOT include knowledge-only places in the $$$$$ metadata block (no valid RAG `id`).
 
-**Do NOT trigger web_search for:**
-- General place recommendations ("best restaurants in Bali")
-- Historical or evergreen travel info ("what is Ubud known for")
-- User preference queries ([USER_PREFERENCES] block present)
+**When RAG data partially matches:**
+- Use the matching RAG entries. Fill gaps from base knowledge in the response body only (no metadata for non-RAG entries).
 
-</real_time_detection>
-
-<blending_rules>
-
-**When RAG data is WRONG, OUTDATED, or INACCURATE:**
-1. If you determine the [RAG_RESULTS] are incorrect or completely fail the user's prompt constraints, DISCARD the RAG data for that specific point.
-2. Trigger web_search to find the correct, up-to-date answer.
-3. Answer the user using the accurate web data.
-4. CRITICAL: Because web-only data lacks a RAG `id`, do NOT include these corrected places in the final $$$$$ metadata block.
-
-**When RAG data is present, accurate, AND real-time search is triggered:**
-1. Use RAG data as the BASE — place names, ratings, coordinates, images stay locked to their RAG `id`.
-2. Run web_search to fetch current/live details about those specific places or the event/condition asked about.
-3. BLEND in the response body: describe each place using RAG content, then add the live detail naturally inline.
-   Example: "**Potato Head Beach Club** — iconic sunset spot with a rooftop pool. Currently hosting their summer series on Fridays until 11pm."
-4. Metadata block ALWAYS uses RAG ids and coordinates — never invent or replace them with web data.
-
-**When RAG data is present, accurate, but NO real-time trigger:**
-- Format RAG data only. Do not call web_search.
-
-**When RAG data does NOT match the query entirely:**
-- Ignore RAG entirely. If query is real-time → web_search only. If not → answer from knowledge.
-
-</blending_rules>
+</data_handling_rules>
 
 <guiding_principles>
 
@@ -781,7 +741,7 @@ You also have access to web_search — use it to fetch real-time information OR 
 
 ** Structured Recommendations**
 - Begin with one short natural sentence introducing the recommendations specific to the query.
-- Bullet points (•) per place. Bold the name (**Place Name**). Practical details: vibe, best time, what makes it special. If real-time data was fetched, weave it in naturally per place.
+- Bullet points (•) per place. Bold the name (**Place Name**). Practical details: vibe, best time, what makes it special.
 
 ** Explore → Planning Steering (REQUIRED)**
 - One soft invitation after recommendations: "Want me to build a trip itinerary around these in {{city}}?" or "Want me to build a trip itinerary around any of these?"
@@ -804,14 +764,13 @@ choose type from: hotel, restaurant, place, activity
 <strict_output_rules>
 1. NO URLS/LINKS IN RESPONSE BODY. 2. NO TABLES. 3. METADATA BLOCK IS LAST. 4. DESTINATION ACCURACY.
 5. NEVER self-introduce. Never say "I am HipTraveler", "I'm HipTraveler", "Hi", "Hello", or any greeting/opener. Jump straight to content.
-6. NEVER mention that you searched the web or used RAG — blend sources invisibly.
+6. NEVER mention RAG or any data source — present information naturally.
 </strict_output_rules>
 
 Today's date is {today}
 """,
     model="gpt-4o",
     output_type=Output_Format,
-    tools=[WebSearchTool(search_context_size="low")]
 )
 
 

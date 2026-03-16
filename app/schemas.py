@@ -63,7 +63,7 @@ class TripPlan(BaseModel):
     """The structured DTO for an extracted trip plan."""
     startDate: Optional[str] = Field(None, description="The start date of the trip in MM-dd-yyyy format. Infer from context.")
     endDate: Optional[str] = Field(None, description="The end date of the trip in MM-dd-yyyy format. Infer from context.")
-    numDays: Optional[int] = Field(None, description="The total duration of the trip in days. Use this if specific dates are not present.")
+    numDays: Optional[int] = Field(None, description="Trip duration in days. Auto-calculated from startDate + endDate. Never included in feedback.")
     destinations: list[str] = Field(..., description="A list of cities, countries, or regions (e.g., 'Amalfi Coast', 'NorCal').")
     pax: Optional[Pax] = Field(None, description="Traveler counts. Null if not mentioned.")    
     experienceTypes: Optional[list[str]] = Field(None, description="list of curated experience keywords (e.g., 'romantic', 'adventure', 'cultural', 'family friendly', 'relaxation').")

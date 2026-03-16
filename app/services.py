@@ -285,10 +285,19 @@ async def stream_agent_to_queue(
       • Error             → Exception instance put into queue
       • Stream complete   → None put into queue  (always sent via finally)
 
+    Validation routing:
+      • rag_format_agent  → fire research_further(question) immediately — validator
+                            researches places for that query broadly.
+      • web_search_agent  → accumulate full answer, then fire
+                            research_further(question + answer) so the validator
+                            targets only the specific places web search returned.
+
     Zep saves are handled upstream in _main_stream — not here.
     """
     try:
-        research_further(final_message_with_ref)
+        # RAG path: send just the question to the validator right away
+        if agent_name == 'rag_format_agent':
+            research_further(original_message)
 
         if agent_name == 'rag_format_agent':
             result = Runner.run_streamed(rag_format_agent, final_message_with_ref)
@@ -301,6 +310,10 @@ async def stream_agent_to_queue(
         prefix_buf  = ""
         prefix_done = False
         suffix_buf  = ""
+
+        # Web search path: collect all emitted tokens so we can send them to the validator
+        answer_parts = [] if agent_name == 'web_search_agent' else None
+
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                 chunk = event.data.delta
@@ -329,6 +342,8 @@ async def stream_agent_to_queue(
                 if len(pending) > _SUFFIX_LEN:
                     emit = pending[:-_SUFFIX_LEN]
                     await queue.put(emit)
+                    if answer_parts is not None:
+                        answer_parts.append(emit)
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
@@ -338,6 +353,16 @@ async def stream_agent_to_queue(
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             if cleaned:
                 await queue.put(cleaned)
+                if answer_parts is not None:
+                    answer_parts.append(cleaned)
+
+        # Web search path: now that the full answer is ready, send question + answer
+        # to the validator so it researches only the places web search returned.
+        # Strip the $$$$$ metadata block — validator only needs the readable text.
+        if answer_parts:
+            full_answer = ''.join(answer_parts)
+            full_answer = full_answer.split("$$$$$")[0].strip()
+            research_further(f"{original_message}\n\nAnswer:\n{full_answer}")
 
         # Assistant answers are not saved to Zep — only user questions are saved
 

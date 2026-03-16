@@ -234,41 +234,55 @@ def place_search(queries: List[Dict[str, str]], reference: str = "hiptraveler") 
         print(f"!!! General Request Error: {e}")
         raise requests.exceptions.RequestException(f"Request failed: {e}")
     
-def research_further(query: str):
+def research_further(query: str, reference: str = "hiptraveler"):
     """
-    Send a query to the webhook for research purposes.
-    This version runs in the background and does not block the main workflow.
-    
-    Args:
-        query (str): The query string to send to the RAG system
+    Kick off the validation pipeline in a background thread without any HTTP round-trip.
+    Calls the validation logic directly in-process so logs are visible and environment
+    (dev / prod / local) makes no difference.
     """
-    
-    def _send_request(query_inner):
-        # Validate input
+    def _run(query_inner: str):
         if not query_inner or not query_inner.strip():
-            print("Query cannot be empty or None")
             return
-        
-        url = "https://ai.hiptraveler.com/validator/process" # https://experience-finder-ai-new.onrender.com
-        payload = {"query": query_inner.strip(),"reference": "hiptraveler"}
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=1000)
-            response.raise_for_status()
+
+        import asyncio
+        from app.api.validator.helpers import is_duplicate_query, process_in_background
+        from app.api.validator.services.supabase_service import SupabaseService
+        from app.api.validator.services.openai_service import OpenAIService
+
+        async def _pipeline():
+            question_only = query_inner.split("\n\nAnswer:\n")[0].strip()
+
+            supabase_service = SupabaseService()
+            openai_service   = OpenAIService()
+
+            # Run dedup check and classify_query in parallel — saves ~2-3s
+            is_dup, classification = await asyncio.gather(
+                is_duplicate_query(question_only, supabase_service),
+                openai_service.classify_query(query_inner.strip()),
+                return_exceptions=True,
+            )
+
+            if isinstance(is_dup, Exception):
+                print(f"⚠️ Dedup check failed ({is_dup}), continuing")
+                is_dup = False
+            if isinstance(classification, Exception):
+                print(f"⚠️ classify_query failed ({classification}), aborting")
+                return
+
+            if is_dup:
+                print(f"🔁 research_further: duplicate — skipping '{question_only}'")
+                return
+
             try:
-                data = response.json()
-            except json.JSONDecodeError:
-                data = {"success": True, "data": response.text, "status_code": response.status_code}
-            
-            # Optionally log the response or store it somewhere
-            print("research_further completed:", data)
-        
-        except requests.exceptions.RequestException as e:
-            print(f"research_further request failed: {e}")
-    
-    # Run the request in a separate thread
-    thread = threading.Thread(target=_send_request, args=(query,))
-    thread.daemon = True  # so it won't block program exit
+                await supabase_service.insert_saved_query(question_only)
+            except Exception as e:
+                print(f"⚠️ research_further: could not save query ({e}), continuing")
+
+            # Pass the pre-computed classification so process_in_background skips the classify call
+            await process_in_background(query=query_inner.strip(), reference=reference, classification=classification)
+
+        asyncio.run(_pipeline())
+
+    thread = threading.Thread(target=_run, args=(query,), daemon=True)
     thread.start()
     

@@ -3,6 +3,7 @@ import requests
 import json
 from typing import Dict, List, Any
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 from app.api.validator.services.supabase_service import SupabaseService
 from supabase import create_client
@@ -411,80 +412,43 @@ Provide your response strictly in JSON format:
     def get_validated_research(self, query: str) -> Dict[str, Any]:
         """
         Main function to get validated research.
+        All 3 web searches run in parallel via ThreadPoolExecutor.
         """
-        # Collect research from all sources
-        research_results = []
-        
-        # OpenAI
         print(f"\n{'='*80}")
-        print(f"🔎 RESEARCH SOURCE 1: OpenAI Web Search")
-        print(f"{'='*80}")
+        print(f"🔎 PARALLEL WEB RESEARCH — 3 sources firing simultaneously")
         print(f"📤 Query: '{query}'")
-        openai_result = self.search_openai(query)
-        research_results.append(openai_result)
-        print(f"✅ Success: {openai_result.get('success')}")
-        if openai_result.get('success'):
-            content = openai_result.get('content', '')
-            content_type = type(content).__name__
-            content_str = str(content)
-            print(f"📝 Content type: {content_type}")
-            print(f"📝 Content length: {len(content_str)} chars")
-            print(f"📝 Content preview:\n{content_str[:1000]}")
-            print(f"🔗 Citations ({len(openai_result.get('citations', []))}): {openai_result.get('citations', [])}")
-        else:
-            print(f"❌ Error: {openai_result.get('error')}")
-        print(f"{'='*80}\n")
-        time.sleep(1)
-        
-        # Perplexity
-        print(f"\n{'='*80}")
-        print(f"🔎 RESEARCH SOURCE 2: Perplexity")
         print(f"{'='*80}")
-        print(f"📤 Query: '{query}'")
-        perplexity_result = self.search_perplexity(query)
-        research_results.append(perplexity_result)
-        print(f"✅ Success: {perplexity_result.get('success')}")
-        if perplexity_result.get('success'):
-            content = perplexity_result.get('content', '')
-            print(f"📝 Content type: {type(content).__name__}")
-            print(f"📝 Content length: {len(str(content))} chars")
-            print(f"📝 Content preview:\n{str(content)[:1000]}")
-            print(f"🔗 Citations ({len(perplexity_result.get('citations', []))}): {perplexity_result.get('citations', [])}")
-        else:
-            print(f"❌ Error: {perplexity_result.get('error')}")
-        print(f"{'='*80}\n")
-        time.sleep(1)
-        
-        # Gemini
-        print(f"\n{'='*80}")
-        print(f"🔎 RESEARCH SOURCE 3: Gemini (Google Search)")
-        print(f"{'='*80}")
-        print(f"📤 Query: '{query}'")
-        gemini_result = self.search_gemini(query)
-        research_results.append(gemini_result)
-        print(f"✅ Success: {gemini_result.get('success')}")
-        if gemini_result.get('success'):
-            content = gemini_result.get('content', '')
-            print(f"📝 Content type: {type(content).__name__}")
-            print(f"📝 Content length: {len(str(content))} chars")
-            print(f"📝 Content preview:\n{str(content)[:1000]}")
-            print(f"🔗 Citations ({len(gemini_result.get('citations', []))}): {gemini_result.get('citations', [])}")
-        else:
-            print(f"❌ Error: {gemini_result.get('error')}")
-        print(f"{'='*80}\n")
-        
-        # Summary before synthesis
-        successful = [r for r in research_results if r.get('success') and r.get('content')]
-        failed = [r for r in research_results if not r.get('success') or not r.get('content')]
-        print(f"\n📊 RESEARCH SUMMARY")
-        print(f"{'='*80}")
-        print(f"✅ Successful sources with content: {len(successful)}/3")
-        print(f"❌ Failed or empty sources: {len(failed)}/3")
+
+        t_start = time.time()
+
+        # ── Fire all 3 searches in parallel ──────────────────────────────────
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_openai     = executor.submit(self.search_openai,     query)
+            future_perplexity = executor.submit(self.search_perplexity, query)
+            future_gemini     = executor.submit(self.search_gemini,     query)
+
+            openai_result     = future_openai.result()
+            perplexity_result = future_perplexity.result()
+            gemini_result     = future_gemini.result()
+
+        research_results = [openai_result, perplexity_result, gemini_result]
+
+        print(f"⚡ All 3 searches completed in {time.time() - t_start:.1f}s")
+
+        # ── Compact result summary ────────────────────────────────────────────
         for r in research_results:
-            has_content = bool(r.get('content'))
-            content_len = len(str(r.get('content', ''))) if has_content else 0
-            status = "✅" if r.get('success') and has_content else "❌"
-            print(f"   {status} {r.get('source')}: success={r.get('success')}, has_content={has_content}, content_length={content_len}")
+            ok      = r.get('success') and r.get('content')
+            content = str(r.get('content', ''))
+            status  = "✅" if ok else "❌"
+            print(f"  {status} {r.get('source')}: {len(content)} chars | "
+                  f"{len(r.get('citations', []))} citations")
+            if ok:
+                print(f"     Preview: {content[:300]}")
+            else:
+                print(f"     Error: {r.get('error')}")
+
+        successful = [r for r in research_results if r.get('success') and r.get('content')]
+        print(f"\n📊 {len(successful)}/3 sources with content")
         print(f"{'='*80}\n")
         
         # Calculate similarity and synthesize

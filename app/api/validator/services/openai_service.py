@@ -57,8 +57,8 @@ class OpenAIService:
 
     def _validate_response(self, result: QueryClassification) -> None:
         """Validate that the OpenAI response matches expected format"""
-        if result.type.value == "generic" and len(result.queries) != 5:
-            raise ValueError(f"Generic query should have 5 sub-queries, got {len(result.queries)}")
+        if result.type.value == "generic" and not (1 <= len(result.queries) <= 10):
+            raise ValueError(f"Generic query should have 1–10 sub-queries, got {len(result.queries)}")
         if result.type.value == "specific" and len(result.queries) != 1:
             raise ValueError(f"Specific query should have 1 query, got {len(result.queries)}")
         if result.type.value == "ignore" and len(result.queries) != 0:

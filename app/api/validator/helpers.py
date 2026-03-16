@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import uuid
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
@@ -400,70 +401,37 @@ async def process_query_research(
     """Runs validation, converts to attraction format, and saves to Supabase.
     When skip_storage=True, skips all RAG upserts and Supabase inserts."""
     load_dotenv()
+    t_total = time.time()
 
     # ============================================
-    # STEP 1: Check RAG system first
+    # STEP 1+2: RAG check and web research in parallel
     # ============================================
-    print("\n" + "🔍"*40)
-    print("🔍 STARTING RAG CHECK")
-    print("🔍"*40)
-    print(f"📤 Query sent to RAG: '{query}'")
-    print(f"📤 Reference: '{reference}'")
-    print(f"📤 Original Query: '{original_query}'")
-    print("🔍"*40 + "\n")
+    print(f"\n⚡ Firing RAG check + web research in parallel for: '{query}'")
+    t0 = time.time()
 
-    rag_response = None  # Initialize to store RAG data
+    rag_raw, result = await asyncio.gather(
+        asyncio.to_thread(rag, query, reference),
+        asyncio.to_thread(validate_research, query),
+        return_exceptions=True,
+    )
+    print(f"⏱  RAG + research: {time.time() - t0:.1f}s")
 
-    try:
-        # Call RAG function asynchronously
-        rag_response = await asyncio.to_thread(rag, query, reference)
-
-        print("\n" + "📥"*40)
-        print("📥 RAG RESPONSE RECEIVED")
-        print("📥"*40)
-        print("📥 Full RAG Response:")
-        print(json.dumps(rag_response, indent=2, ensure_ascii=False))
-        print("📥"*40 + "\n")
-
-        # Check if RAG has a valid answer
-        if has_rag_answer(rag_response):
-            print("\n" + "✅"*40)
-            print("✅ FOUND IN RAG - WILL EXCLUDE THIS CONTENT")
-            print("✅"*40)
-            print("📋 Content that will be EXCLUDED from new research:")
-            print(json.dumps({
-                "entities": rag_response.get("entities", []),
-                "chunks": rag_response.get("chunks", []),
-                "audience": rag_response.get("audience", []),
-                "travel_style": rag_response.get("travel_style", [])
-            }, indent=2, ensure_ascii=False))
-            print("✅"*40 + "\n")
-            # DON'T return None - continue with research but pass RAG context
+    # ── Process RAG result ────────────────────────────────────────
+    rag_response = None
+    if isinstance(rag_raw, Exception):
+        print(f"⚠️ RAG check failed (continuing): {rag_raw}")
+    else:
+        print(json.dumps(rag_raw, indent=2, ensure_ascii=False))
+        if has_rag_answer(rag_raw):
+            rag_response = rag_raw
+            print("✅ RAG has data — will pass as exclusion context")
         else:
-            print("\n" + "❌"*40)
-            print("❌ NOT IN RAG - PROCEEDING WITH FULL RESEARCH")
-            print("❌"*40 + "\n")
-            rag_response = None  # Clear it if no valid data
+            print("❌ RAG has no data — full research will be used")
 
-    except Exception as e:
-        # If RAG fails, log it but continue with normal flow
-        print("\n" + "⚠️"*40)
-        print("⚠️ RAG SYSTEM ERROR")
-        print("⚠️"*40)
-        print(f"⚠️ Error: {e}")
-        print(f"⚠️ Error Type: {type(e).__name__}")
-        print("⚠️ Continuing with normal research flow...")
-        print("⚠️"*40 + "\n")
-        rag_response = None
-
-    # ============================================
-    # STEP 2: Proceed with research (with RAG context if available)
-    # ============================================
-    print("\n" + "🔬"*40)
-    print("🔬 STARTING RESEARCH VALIDATION")
-    print("🔬"*40 + "\n")
-
-    result = await asyncio.to_thread(validate_research, query)
+    # ── Process validate_research result ─────────────────────────
+    if isinstance(result, Exception):
+        print(f"❌ validate_research failed: {result}")
+        return None
 
     # ============================================
     # SCORE CHECK: Skip if score is 0
@@ -479,6 +447,7 @@ async def process_query_research(
     api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
     maps_data = None
     place_image_url = None
+    t1 = time.time()
     if location and api_key:
         print(f"🗺️  Looking up Google Maps data for: {location}")
         maps_data = await get_google_maps_data(location, api_key)
@@ -491,6 +460,7 @@ async def process_query_research(
             print(f"🗺️  No Google Maps data found for: {location}")
     elif not api_key:
         print("⚠️  Warning: GOOGLE_MAPS_API_KEY not set. Skipping maps lookup.")
+    print(f"⏱  Maps lookup: {time.time() - t1:.1f}s")
 
     conversion_input = {
         "type": query_type,
@@ -525,11 +495,13 @@ async def process_query_research(
 
     try:
         print("🤖 Calling OpenAI for conversion...")
+        t2 = time.time()
         formatted_data_list = await asyncio.to_thread(
             convert_research_to_attraction,
             conversion_input,
             openai_api_key,
         )
+        print(f"⏱  Conversion: {time.time() - t2:.1f}s")
 
         if formatted_data_list:
             # ── Override source with best citation (TripAdvisor → Yelp → other) ──
@@ -589,11 +561,12 @@ async def process_query_research(
 
                 elif score_value >= 2:
                     print(f"📊 Action: Upsert to RAG only (skip database)")
+                    t_upsert = time.time()
                     rag_success = await upsert_to_rag(formatted_data, place_maps_data)
                     formatted_data["rag_upserted"] = rag_success
                     formatted_data["db_id"] = None
                     if rag_success:
-                        print(f"✅ Successfully upserted to RAG: '{place_title}'")
+                        print(f"✅ Successfully upserted to RAG: '{place_title}' ({time.time() - t_upsert:.1f}s)")
                     else:
                         print(f"⚠️  Failed to upsert to RAG: '{place_title}'")
 
@@ -617,33 +590,41 @@ async def process_query_research(
                 all_formatted.append(formatted_data)
 
             # Return the first result for backwards compatibility (callers expect a single dict)
+            print(f"\n🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}'")
             return all_formatted[0] if len(all_formatted) == 1 else all_formatted[0]
+        print(f"\n🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}' (no formatted data)")
         return conversion_input["results"][0]
     except Exception as e:
         print(f"\n❌ Error converting data with OpenAI: {e}")
+        print(f"🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}' (failed)")
         return conversion_input["results"][0]
 
 
 # -------------------------------------------------------
 # Background Processing
 # -------------------------------------------------------
-async def process_in_background(query: str, reference: str):
-    """Process the research in the background."""
+async def process_in_background(query: str, reference: str, classification: Optional[Dict[str, Any]] = None):
+    """Process the research in the background.
+    If `classification` is already computed (e.g. ran in parallel with dedup), it is reused
+    to skip the classify_query call entirely.
+    """
     try:
+        t_bg = time.time()
         print(f"\n{'='*80}")
         print(f"🚀 Background Research Started")
-        print(f"Query: {query}")
+        print(f"Query (full): {query[:200]}{'...' if len(query) > 200 else ''}")
         print(f"Reference: {reference}")
         print(f"{'='*80}\n")
 
-        openai_service = OpenAIService()
-        print("✅ OpenAI service initialized")
-
         supabase_service = SupabaseService()
-        print("✅ Supabase service initialized")
 
-        classification = await openai_service.classify_query(query)
-        print(f"✅ Classification completed: {classification.get('type')}")
+        if classification is None:
+            openai_service = OpenAIService()
+            t_c = time.time()
+            classification = await openai_service.classify_query(query)
+            print(f"✅ Classification completed: {classification.get('type')} ({time.time() - t_c:.1f}s)")
+        else:
+            print(f"✅ Classification reused (pre-computed): {classification.get('type')}")
 
         formatted_results: List[Dict[str, Any]] = []
 
@@ -669,10 +650,8 @@ async def process_in_background(query: str, reference: str):
                 print(f"✅ Multiple queries research completed: {len(formatted_results)} results")
 
         print(f"\n{'='*80}")
-        print(f"✅ Background Research Completed Successfully")
-        print(f"{'='*80}")
-        print(f"Type: {classification.get('type')}")
-        print(f"Results: {len(formatted_results)} items processed")
+        print(f"✅ Background Research Completed in {time.time() - t_bg:.1f}s")
+        print(f"Type: {classification.get('type')} | Results: {len(formatted_results)} items processed")
         print(f"{'='*80}\n")
 
     except Exception as e:

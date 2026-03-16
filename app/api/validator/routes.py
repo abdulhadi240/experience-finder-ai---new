@@ -57,9 +57,13 @@ async def validate_query(request: ValidatorRequest):
     print(f"{'='*80}\n")
 
     try:
-        # ── Step 1: Duplicate check ───────────────────────────
+        # Extract the question-only portion for dedup/storage.
+        # Web search path sends "question\n\nAnswer:\n..." — we only store the question.
+        question_only = request.query.split("\n\nAnswer:\n")[0].strip()
+
+        # ── Step 1: Duplicate check (question only) ───────────
         supabase_service = SupabaseService()
-        is_dup = await is_duplicate_query(request.query, supabase_service)
+        is_dup = await is_duplicate_query(question_only, supabase_service)
 
         if is_dup:
             print("🔁 Query is a duplicate — skipping research\n")
@@ -68,14 +72,16 @@ async def validate_query(request: ValidatorRequest):
                 "duplicate": True,
             }
 
-        # ── Step 2: Save the new query ────────────────────────
+        # ── Step 2: Save the question only ────────────────────
         try:
-            await supabase_service.insert_saved_query(request.query)
+            await supabase_service.insert_saved_query(question_only)
             print(f"✅ Query saved to saved_queries table")
         except Exception as e:
             print(f"⚠️  Could not save query (continuing anyway): {e}")
 
         # ── Step 3: Start background research ─────────────────
+        # Pass the FULL query (with Answer: block if present) so the classifier
+        # can extract the specific place names the web search returned.
         asyncio.create_task(
             process_in_background(
                 query=request.query,

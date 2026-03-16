@@ -35,26 +35,26 @@ def pick_best_citation(citations: List[str]) -> str:
 
 # Output Schema Models
 class MetaObject(BaseModel):
-    audience: List[str]
-    location: str
+    audience: List[str] = []
+    location: Optional[str] = None
     ranking: Optional[str] = None
     price_level: Optional[str] = None
 
 
 class AttractionOutput(BaseModel):
-    country: str
-    city: str
-    meta_obj: MetaObject
-    latitude: str
-    language: str
-    category: str
-    source: str
-    title: str
-    content: str
-    region_code: str
-    tags: str
-    longitude: str
-    query: str
+    country: str = ""
+    city: str = ""
+    meta_obj: MetaObject = MetaObject()
+    latitude: Optional[str] = None
+    language: str = "en"
+    category: str = ""
+    source: str = ""
+    title: str = ""
+    content: str = ""
+    region_code: Optional[str] = None
+    tags: str = ""
+    longitude: Optional[str] = None
+    query: str = ""
 
 
 def convert_research_to_attraction(
