@@ -124,9 +124,11 @@ trip_planning_agent = Agent(
     =====================================================================
 
     Population rules (in priority order):
-    1. **Both dates present**: If `startDate` and `endDate` are both set, calculate `numDays = endDate - startDate` (inclusive, i.e. number of days between the two dates).
-    2. **Explicit number stated**: If the user says "5 days", "11-15 days" (use lower bound: 11), etc., set `numDays` accordingly.
+    1. **Both dates present**: If `startDate` and `endDate` are both set, calculate `numDays = endDate - startDate` (inclusive). → `numDays` has a value → **NEVER** add to feedback.
+    2. **Explicit number stated**: If the user says "5 days", "11-15 days" (use lower bound: 11), etc. → `numDays` has a value → **NEVER** add to feedback.
     3. **Vague or not mentioned**: Set `numDays: null` → add `numDays` to feedback.
+
+    **Once `numDays` has any value (from calculation OR from user input) → it is DONE. Remove it from feedback, do not ask about it.**
 
     **`numDays` feedback inclusion is INDEPENDENT of `startDate`.**
     Whether or not `startDate` was excluded by a negative constraint has NO effect on `numDays`.
@@ -144,13 +146,14 @@ trip_planning_agent = Agent(
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
         * `startDate` (if condition passed — ALWAYS first if included)
-        * `numDays` (if null and not calculable — ALWAYS goes in feedback, independent of startDate)
+        * `numDays` — **ONLY if `numDays` is null**. If it has any value (calculated or explicit) → **NEVER** in feedback.
         * `destinations` — **ONLY if `destinations` is an empty list `[]`**. If it contains ANY value, do NOT add.
         * `pax` — **ONLY if `pax` is null**. If any traveller count was given, do NOT add.
         * `travelStyle` — ONLY if null.
         * `activities` — ONLY if null.
 
         **POPULATED = NOT IN FEEDBACK. This is absolute:**
+        - `numDays` is not null (any value, even calculated from dates) → **NEVER** in feedback.
         - `destinations` has 1+ items → **NEVER** in feedback.
         - `pax` is not null → **NEVER** in feedback.
         - `travelStyle` is not null → **NEVER** in feedback.
@@ -481,7 +484,7 @@ trip_planning_agent = Agent(
     * Every field in the schema must be present in the output.
     """,
 
-    model="gpt-5.2",
+    model="gpt-5.4",
     output_type=TripPlan,
     handoff_description="Extracts trip plans. Handles date refusals and day ranges intelligently."
 )
