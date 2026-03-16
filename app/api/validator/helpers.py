@@ -15,6 +15,7 @@ from app.api.validator.services.openai_service import OpenAIService
 from app.api.validator.services.validator_service import validate_research
 from app.api.validator.services.conversion import convert_research_to_attraction, pick_best_citation
 from app.api.validator.services.supabase_service import SupabaseService
+from app.api.validator.services.whitelist_service import run_whitelist_discovery
 
 
 # -------------------------------------------------------
@@ -629,9 +630,18 @@ async def process_in_background(query: str, reference: str, classification: Opti
         formatted_results: List[Dict[str, Any]] = []
 
         if classification.get("queries"):
-            if len(classification["queries"]) == 1:
+            sub_queries = classification["queries"]
+
+            # ── Fire whitelist discovery in parallel (non-blocking) ───────────
+            # One whitelist task per unique sub-query — runs concurrently with
+            # the full research pipeline and does NOT block returning results.
+            for q in sub_queries:
+                asyncio.create_task(run_whitelist_discovery(q))
+            print(f"🔐 Whitelist discovery fired for {len(sub_queries)} sub-queries (parallel)")
+
+            if len(sub_queries) == 1:
                 result = await process_query_research(
-                    classification["queries"][0],
+                    sub_queries[0],
                     query,
                     classification["type"],
                     supabase_service,
@@ -643,7 +653,7 @@ async def process_in_background(query: str, reference: str, classification: Opti
             else:
                 tasks = [
                     process_query_research(q, query, classification["type"], supabase_service, reference)
-                    for q in classification["queries"]
+                    for q in sub_queries
                 ]
                 all_results = await asyncio.gather(*tasks)
                 formatted_results = [r for r in all_results if r is not None]

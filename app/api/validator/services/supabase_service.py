@@ -124,3 +124,35 @@ class SupabaseService:
         except Exception as e:
             print(f"Error deleting saved_queries: {e}")
             raise
+
+    # -------------------------------------------------------
+    # whitelist_domains table helpers
+    # -------------------------------------------------------
+    async def get_whitelist_domains(
+        self, category: Optional[str] = None, country: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch verified whitelist domains.
+        Optionally filter by category and/or country (case-insensitive).
+        Returns a list of rows: {id, category, country, source, verified_at, created_at}
+        """
+        try:
+            query = self.client.table("whitelist_domains").select("*")
+            if category:
+                query = query.eq("category", category.lower())
+            if country:
+                query = query.eq("country", country.lower())
+            response = await asyncio.to_thread(lambda: query.execute())
+            return response.data or []
+        except Exception as e:
+            print(f"Error fetching whitelist_domains: {e}")
+            return []
+
+    async def is_source_whitelisted(
+        self, source: str, category: str, country: str
+    ) -> bool:
+        """
+        Return True if the given domain is in the whitelist for category + country.
+        """
+        rows = await self.get_whitelist_domains(category=category, country=country)
+        return source.lower() in {r["source"] for r in rows}

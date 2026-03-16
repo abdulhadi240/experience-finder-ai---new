@@ -6,6 +6,11 @@ import time
 import concurrent.futures
 from dotenv import load_dotenv
 from app.api.validator.services.supabase_service import SupabaseService
+from app.api.validator.services.whitelist_service import (
+    _extract_category,
+    _extract_country_from_query,
+    fetch_whitelist_domains,
+)
 from supabase import create_client
 import asyncio
 
@@ -35,6 +40,10 @@ class ResearchValidator:
             asyncio.run(self._initialize_blacklist_domains())
         except Exception as e:
             print(f"⚠️ Error initializing blacklist domains: {e}")
+
+        # Whitelist domains are fetched per-query (category + country specific)
+        # so we only store the current query's whitelist here temporarily.
+        self._current_whitelist: List[str] = []
 
     async def get_all_blacklist_domains(self) -> List[str]:
         """Retrieve all blacklist domains from the Supabase table 'blacklist_domains'"""
@@ -66,21 +75,33 @@ class ResearchValidator:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.openai_key}",
         }
-        
-        # Construct blacklist prompt
+
+        # Construct blacklist note
         if self.blacklist_domains:
             blocked = ", ".join(self.blacklist_domains)
             blacklist_note = f"\nDO NOT USE any of the following sources or domains under any circumstance: {blocked}."
         else:
             blacklist_note = ""
-        
+
+        # Construct whitelist note — these are verified trusted sources for this query
+        if self._current_whitelist:
+            trusted = ", ".join(self._current_whitelist)
+            whitelist_note = (
+                f"\nTRUSTED SOURCES: The following domains have been verified as the most "
+                f"authoritative sources for this category and country. Prioritise them when "
+                f"available, in addition to Tripadvisor and Yelp: {trusted}."
+            )
+        else:
+            whitelist_note = ""
+
         system_prompt = (
-        "You are an expert internet research assistant. Your primary goal is to gather accurate, up-to-date, and verifiable information from the web about locations, attractions, and businesses. "
-        "Prioritize sources in this order: 1) Tripadvisor, 2) Yelp, 3) official or reputable travel/review sites (Google Travel, Lonely Planet, etc.). "
-        "For each entity, collect: name, location, ranking info (e.g., '#1 of 1 Things to Do in Sandy Point'), price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. "
-        "Present findings in structured format (bullets or table), cite Tripadvisor or Yelp first, list top 3 results if relevant, and note when primary sources are unavailable. "
-        "Be factual, concise, and analytical; extract ranking and price level verbatim from the source; use the most recent data available."
-        + blacklist_note
+            "You are an expert internet research assistant. Your primary goal is to gather accurate, up-to-date, and verifiable information from the web about locations, attractions, and businesses. "
+            "Prioritize sources in this order: 1) Tripadvisor, 2) Yelp, 3) official or reputable travel/review sites (Google Travel, Lonely Planet, etc.). "
+            "For each entity, collect: name, location, ranking info (e.g., '#1 of 1 Things to Do in Sandy Point'), price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. "
+            "Present findings in structured format (bullets or table), cite Tripadvisor or Yelp first, list top 3 results if relevant, and note when primary sources are unavailable. "
+            "Be factual, concise, and analytical; extract ranking and price level verbatim from the source; use the most recent data available."
+            + whitelist_note
+            + blacklist_note
         )
         
         data = {
@@ -120,22 +141,41 @@ class ResearchValidator:
         url = "https://api.perplexity.ai/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.perplexity_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        
+
         blacklist_note = ""
         if self.blacklist_domains:
             blocked = ", ".join(self.blacklist_domains)
             blacklist_note = f" Avoid these domains: {blocked}."
-        
+
+        whitelist_note = ""
+        if self._current_whitelist:
+            trusted = ", ".join(self._current_whitelist)
+            whitelist_note = (
+                f" TRUSTED SOURCES: The following domains are verified as the most "
+                f"authoritative for this category and country — prioritise them alongside "
+                f"Tripadvisor and Yelp when available: {trusted}."
+            )
+
+        system_content = (
+            "You are an expert internet research assistant. Your primary goal is to gather accurate, up-to-date, and verifiable information from the web about locations, attractions, and businesses. "
+            "Prioritize sources in this order: 1) Tripadvisor, 2) Yelp, 3) official or reputable travel/review sites (Google Travel, Lonely Planet, etc.). "
+            "For each entity, collect: name, location, ranking info (e.g., '#1 of 1 Things to Do in Sandy Point'), price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. "
+            "Present findings in structured format (bullets or table), cite Tripadvisor or Yelp first, list top 3 results if relevant, and note when primary sources are unavailable. "
+            "Be factual, concise, and analytical; extract ranking and price level verbatim from the source; use the most recent data available."
+            + whitelist_note
+            + blacklist_note
+        )
+
         data = {
             "model": "sonar",
             "messages": [
-                {"role": "system", "content": "You are an expert internet research assistant. Your primary goal is to gather accurate, up-to-date, and verifiable information from the web about locations, attractions, and businesses. Prioritize sources in this order: 1) Tripadvisor, 2) Yelp, 3) official or reputable travel/review sites (Google Travel, Lonely Planet, etc.). For each entity, collect: name, location, ranking info (e.g., '#1 of 1 Things to Do in Sandy Point'), price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. Present findings in structured format (bullets or table), cite Tripadvisor or Yelp first, list top 3 results if relevant, and note when primary sources are unavailable. Be factual, concise, and analytical; extract ranking and price level verbatim from the source; use the most recent data available." + blacklist_note},
-                {"role": "user", "content": query}
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": query},
             ],
             "return_citations": True,
-            "return_related_questions": False
+            "return_related_questions": False,
         }
         
         try:
@@ -185,6 +225,16 @@ class ResearchValidator:
         else:
             blacklist_note = ""
 
+        if self._current_whitelist:
+            trusted = ", ".join(self._current_whitelist)
+            whitelist_note = (
+                f"\nTRUSTED SOURCES: The following domains are verified as the most authoritative "
+                f"for this category and country — prioritise them alongside Tripadvisor and Yelp "
+                f"when available: {trusted}."
+            )
+        else:
+            whitelist_note = ""
+
         system_prompt = (
             "You are an expert internet research assistant. Gather accurate, up-to-date, and verifiable "
             "information from the web about locations, attractions, and businesses. "
@@ -194,6 +244,7 @@ class ResearchValidator:
             "price level ($-$$$$), average rating, top reviews or highlights, category/type, and source URLs for citation. "
             "Present findings in structured format, cite Tripadvisor or Yelp first, and note when primary sources "
             "are unavailable. Be factual, concise, and analytical; use the most recent data available."
+            + whitelist_note
             + blacklist_note
         )
 
@@ -412,12 +463,27 @@ Provide your response strictly in JSON format:
     def get_validated_research(self, query: str) -> Dict[str, Any]:
         """
         Main function to get validated research.
-        All 3 web searches run in parallel via ThreadPoolExecutor.
+        Loads whitelist domains for this query's category + country, then
+        fires all 3 web searches in parallel via ThreadPoolExecutor.
         """
         print(f"\n{'='*80}")
         print(f"🔎 PARALLEL WEB RESEARCH — 3 sources firing simultaneously")
         print(f"📤 Query: '{query}'")
         print(f"{'='*80}")
+
+        # ── Load whitelist for this query ─────────────────────────────────────
+        category = _extract_category(query)
+        country  = _extract_country_from_query(query, self.openai_key)
+
+        if country:
+            self._current_whitelist = fetch_whitelist_domains(category, country)
+            if self._current_whitelist:
+                print(f"✅ Whitelist loaded [{category}/{country}]: {self._current_whitelist}")
+            else:
+                print(f"ℹ️  No whitelist entries for [{category}/{country}]")
+        else:
+            self._current_whitelist = []
+            print(f"ℹ️  Could not resolve country — whitelist skipped")
 
         t_start = time.time()
 
