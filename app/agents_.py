@@ -169,7 +169,8 @@ trip_planning_agent = Agent(
         * If `startDate` is `null`:
             * **First, check NEGATIVE CONSTRAINTS above.**
             * If the user expressed ANY refusal/deferral/uncertainty about dates → **DO NOT** add to feedback. This takes absolute priority.
-            * Only if none of the negative constraints triggered (i.e., the user simply forgot to mention dates) → **ADD** `startDate` to feedback.
+            * **If `numDays` is not null** (user provided a number of days) → **DO NOT** add `startDate` to feedback. The user has expressed their trip duration without committing to dates — do not pressure them for a start date.
+            * Only if NONE of the above conditions triggered → **ADD** `startDate` to feedback.
 
     **Step 3 — Excluded Fields** (NEVER add to feedback under any circumstances):
         * `themes`
@@ -305,11 +306,12 @@ trip_planning_agent = Agent(
     🧪 FEW-SHOT EXAMPLES
     =====================================================================
 
-    **Example 1: User refuses date**
+    **Example 1: User refuses date + numDays provided**
     *Input:* "I want to plan a trip to San Francisco for 4 days, Selected Travelers - 2 adults, 2 children, Selected Start Date - don't have my dates yet."
     *Analysis:*
       - "don't have my dates yet" → negative constraint triggered → EXCLUDE startDate from feedback
-      - numDays = 4 (exact)
+      - numDays = 4 (exact) → also independently excludes startDate (numDays is not null rule)
+      - Both rules agree: startDate NOT in feedback
     *Output:*
     {{
       "startDate": null,
@@ -327,7 +329,30 @@ trip_planning_agent = Agent(
       "summary": "What travel style suits you best?"
     }}
 
-    **Example 1a: User refuses date AND numDays not provided**
+    **Example 1a: numDays provided, no date refusal — startDate still excluded**
+    *Input:* "I want to go to London for 5 days, 2 adults 1 child, luxury style, water sports."
+    *Analysis:*
+      - No date refusal phrase → negative constraint NOT triggered
+      - numDays = 5 (explicit) → numDays is not null → EXCLUDE startDate from feedback
+      - travelStyle and activities are provided → NOT in feedback
+    *Output:*
+    {{
+      "startDate": null,
+      "endDate": null,
+      "numDays": 5,
+      "destinations": ["London"],
+      "month": null,
+      "pax": {{"adults": 2, "children": 1, "infants": 0, "elderly": 0}},
+      "experienceTypes": null,
+      "travelStyle": ["Luxury"],
+      "activities": ["Water Sports"],
+      "themes": null,
+      "pois": [],
+      "feedback": [],
+      "summary": "Your trip to London is all set!"
+    }}
+
+    **Example 1b: User refuses date AND numDays not provided**
     *Input:* "I want to plan a trip to Tokyo, Selected Travelers - 2 adults, Selected Start Date - no dates yet."
     *Analysis:*
       - "no dates yet" → negative constraint triggered → EXCLUDE startDate from feedback
