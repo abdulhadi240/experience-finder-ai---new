@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="zep_cloud")
+
 import uvicorn
 from fastapi import FastAPI
 from app.routes import router as chat_router

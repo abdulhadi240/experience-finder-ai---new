@@ -199,7 +199,7 @@ trip_planning_agent = Agent(
 
     | feedback[0]   | summary question to use                                  |
     |---------------|----------------------------------------------------------|
-    | startDate     | "When would you like to start your trip?"                |
+    | startDate     | "What dates are you planning to travel?"                 |
     | numDays       | "How many days are you planning to stay?"                |
     | destinations  | "Where would you like to go?"                            |
     | pax           | "How many travellers will be joining?"                   |
@@ -210,7 +210,7 @@ trip_planning_agent = Agent(
     * If the user's message contains a question (e.g., "is it good to go in December?", "what's the weather like?", "is that a good time?"):
         1. Answer that question briefly and helpfully in 1–2 sentences using your knowledge (e.g., season, weather, events, highlights for that time).
         2. Immediately append the canonical question for `feedback[0]` from the map above.
-        * Example: feedback[0] = "startDate" → "December is a fantastic time — Bali has dry weather and vibrant festivals. When would you like to start your trip?"
+        * Example: feedback[0] = "startDate" → "December is a fantastic time — Bali has dry weather and vibrant festivals. What dates are you planning to travel?"
     * If the user did NOT ask a question, skip Step A entirely.
 
     **Step B — Ask the next planning question.**
@@ -379,7 +379,7 @@ trip_planning_agent = Agent(
     }}
 
     **Example 1b: User asks a question mid-planning**
-    *Previous agent question:* "When would you like to start your trip?"
+    *Previous agent question:* "What dates are you planning to travel?"
     *User input:* "is it good to go in december?"
     *Analysis:*
       - User asked a question → answer it first, then ask next feedback question
@@ -400,7 +400,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
-      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. When would you like to start your trip?"
+      "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. What dates are you planning to travel?"
     }}
 
     **Example 2: User mentions Month only**
@@ -423,7 +423,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
-      "summary": "When would you like to start your trip?"
+      "summary": "What dates are you planning to travel?"
     }}
 
     **Example 3: User gives a day range and refuses dates**
@@ -472,7 +472,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["startDate", "numDays", "travelStyle", "activities"],
-      "summary": "When would you like to start your trip?"
+      "summary": "What dates are you planning to travel?"
     }}
 
     =====================================================================
