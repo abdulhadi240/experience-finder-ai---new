@@ -206,6 +206,11 @@ trip_planning_agent = Agent(
     | travelStyle   | "What travel style suits you best?"                      |
     | activities    | "What kind of activities are you interested in?"         |
 
+    **`numDays` special case — date refusal context:**
+    If `numDays` is `feedback[0]` AND `startDate` was permanently excluded because the user refused/deferred dates (e.g., said "no dates yet", "flexible", "not sure", etc.):
+    → Use **"No problem! How long are you thinking of traveling for?"** instead of the default numDays question.
+    This acknowledges their refusal and pivots naturally to trip length without asking for dates again.
+
     **Step A — Detect if the user asked a question in their last message.**
     * If the user's message contains a question (e.g., "is it good to go in December?", "what's the weather like?", "is that a good time?"):
         1. Answer that question briefly and helpfully in 1–2 sentences using your knowledge (e.g., season, weather, events, highlights for that time).
@@ -361,6 +366,7 @@ trip_planning_agent = Agent(
       - "no dates yet" → negative constraint triggered → EXCLUDE startDate from feedback
       - numDays not mentioned → null → STILL goes in feedback (independent of startDate exclusion)
       - numDays is now FIRST in feedback because startDate was excluded
+      - Because startDate was excluded by date refusal AND numDays is feedback[0] → use the date-refusal numDays question
     *Output:*
     {{
       "startDate": null,
@@ -375,7 +381,7 @@ trip_planning_agent = Agent(
       "themes": null,
       "pois": [],
       "feedback": ["numDays", "travelStyle", "activities"],
-      "summary": "How many days are you planning to stay?"
+      "summary": "No problem! How long are you thinking of traveling for?"
     }}
 
     **Example 1b: User asks a question mid-planning**
