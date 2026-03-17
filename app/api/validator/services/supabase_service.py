@@ -156,3 +156,48 @@ class SupabaseService:
         """
         rows = await self.get_whitelist_domains(category=category, country=country)
         return source.lower() in {r["source"] for r in rows}
+
+    async def insert_whitelist_domain(
+        self, category: str, country: str, source: str
+    ) -> Dict[str, Any]:
+        """
+        Directly upsert a single domain into whitelist_domains.
+        ON CONFLICT (category, country, source) updates verified_at.
+        """
+        from datetime import datetime, timezone
+        row = {
+            "category": category.lower(),
+            "country": country.lower(),
+            "source": source.lower(),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.table("whitelist_domains")
+                .upsert(row, on_conflict="category,country,source")
+                .execute()
+            )
+            if response.data:
+                return response.data[0]
+            raise RuntimeError("No data returned from upsert operation")
+        except Exception as e:
+            print(f"Error upserting whitelist_domain: {e}")
+            raise
+
+    async def delete_whitelist_domain(
+        self, category: str, country: str, source: str
+    ) -> int:
+        """Delete a specific domain from whitelist_domains. Returns deleted count."""
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.table("whitelist_domains")
+                .delete()
+                .eq("category", category.lower())
+                .eq("country", country.lower())
+                .eq("source", source.lower())
+                .execute()
+            )
+            return len(response.data) if response.data else 0
+        except Exception as e:
+            print(f"Error deleting whitelist_domain: {e}")
+            raise

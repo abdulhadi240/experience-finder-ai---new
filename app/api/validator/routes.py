@@ -141,6 +141,105 @@ async def deep_validation(request: ValidatorRequest):
         )
 
 
+@router.get("/whitelist")
+async def get_whitelist(category: str = None, country: str = None):
+    """
+    Retrieve whitelist domains.
+    Optional query params: ?category=restaurant&country=pakistan
+    """
+    try:
+        supabase_service = SupabaseService()
+        rows = await supabase_service.get_whitelist_domains(category=category, country=country)
+        return {
+            "count": len(rows),
+            "filters": {"category": category, "country": country},
+            "domains": rows,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching whitelist: {str(e)}")
+
+
+@router.post("/whitelist")
+async def insert_whitelist(payload: dict):
+    """
+    Directly insert/upsert a domain into whitelist_domains.
+    Body: {"category": "restaurant", "country": "pakistan", "source": "zomato.com"}
+    """
+    category = payload.get("category", "").strip().lower()
+    country  = payload.get("country", "").strip().lower()
+    source   = payload.get("source", "").strip().lower()
+
+    if not category or not country or not source:
+        raise HTTPException(
+            status_code=422,
+            detail="All fields required: category, country, source"
+        )
+
+    try:
+        supabase_service = SupabaseService()
+        row = await supabase_service.insert_whitelist_domain(category, country, source)
+        return {"message": "Domain upserted", "domain": row}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error inserting whitelist domain: {str(e)}")
+
+
+@router.get("/whitelist/all")
+async def get_all_whitelist():
+    """Return every row in whitelist_domains with no filtering."""
+    try:
+        supabase_service = SupabaseService()
+        rows = await supabase_service.get_whitelist_domains()
+        return {
+            "count": len(rows),
+            "domains": rows,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching whitelist: {str(e)}")
+
+
+@router.get("/whitelist/check")
+async def check_whitelist(source: str, category: str, country: str):
+    """
+    Check if a domain is whitelisted for a given category + country.
+    ?source=zomato.com&category=restaurant&country=pakistan
+    """
+    try:
+        supabase_service = SupabaseService()
+        result = await supabase_service.is_source_whitelisted(source, category, country)
+        return {
+            "source": source.lower(),
+            "category": category.lower(),
+            "country": country.lower(),
+            "whitelisted": result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking whitelist: {str(e)}")
+
+
+@router.delete("/whitelist")
+async def delete_whitelist_domain(payload: dict):
+    """
+    Delete a specific domain from whitelist_domains.
+    Body: {"category": "restaurant", "country": "pakistan", "source": "zomato.com"}
+    """
+    category = payload.get("category", "").strip().lower()
+    country  = payload.get("country", "").strip().lower()
+    source   = payload.get("source", "").strip().lower()
+
+    if not category or not country or not source:
+        raise HTTPException(
+            status_code=422,
+            detail="All fields required: category, country, source"
+        )
+
+    try:
+        supabase_service = SupabaseService()
+        count = await supabase_service.delete_whitelist_domain(category, country, source)
+        return {"message": f"Deleted {count} row(s)", "deleted_count": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting whitelist domain: {str(e)}")
+
+
 @router.get("/saved-queries")
 async def get_saved_queries():
     """Return all non-expired saved queries."""
