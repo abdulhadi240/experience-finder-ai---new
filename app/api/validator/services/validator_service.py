@@ -366,24 +366,35 @@ class ResearchValidator:
                 "error": "Need at least 2 successful sources with content to synthesize."
             }
         
-        analysis_text = f"""You are analyzing research from multiple sources. 
+        n = len(successful_results)
+        analysis_text = f"""You are analyzing research from {n} sources.
 
 Original Query: {query}
 
 """
         for i, result in enumerate(successful_results, 1):
             analysis_text += f"\n{'='*60}\nSOURCE {i} - {result['source']}:\n{'='*60}\n{result['content']}\n\n"
-        
-        analysis_text += """
-Task 1: Calculate Similarity Score (out of 3).
+
+        if n >= 3:
+            score_rubric = """Task 1: Calculate Similarity Score (out of 3).
 Analyze how similar these research results are:
-- 3/3 = All sources strongly agree on the same information
-- 2.5/3 = All sources agree, minor differences in details
+- 3/3 = All 3 sources strongly agree on the same information
+- 2.5/3 = All 3 sources agree, minor differences in details
 - 2/3 = Two sources agree, one provides different information
 - 1.5/3 = Partial agreement, notable differences
 - 1/3 = Sources mostly provide different information
 - 0.5/3 = Sources significantly contradict each other
-- 0/3 = Complete contradiction
+- 0/3 = Complete contradiction"""
+        else:
+            score_rubric = """Task 1: Calculate Similarity Score (out of 3).
+You have 2 sources. Score based on their agreement:
+- 3/3 = Both sources strongly agree on the same information
+- 2.5/3 = Both sources agree, minor differences in details
+- 2/3 = Partial agreement, some notable differences
+- 1/3 = Sources mostly provide different information
+- 0/3 = Sources significantly contradict each other"""
+
+        analysis_text += score_rubric
 
 Task 2: Synthesize Combined Research.
 Create a comprehensive, cohesive answer that combines the best factual information from all sources.
@@ -487,39 +498,59 @@ Provide your response strictly in JSON format:
 
         t_start = time.time()
 
-        # ── Fire all 3 searches in parallel ──────────────────────────────────
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_openai     = executor.submit(self.search_openai,     query)
-            future_perplexity = executor.submit(self.search_perplexity, query)
-            future_gemini     = executor.submit(self.search_gemini,     query)
+        # ── Fire all 3 searches in parallel; start synthesis as soon as 2 arrive ──
+        research_results = []
+        synthesis_future = None
 
-            openai_result     = future_openai.result()
-            perplexity_result = future_perplexity.result()
-            gemini_result     = future_gemini.result()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            search_futures = {
+                executor.submit(self.search_openai,     query): "OpenAI",
+                executor.submit(self.search_perplexity, query): "Perplexity",
+                executor.submit(self.search_gemini,     query): "Gemini",
+            }
 
-        research_results = [openai_result, perplexity_result, gemini_result]
+            for future in concurrent.futures.as_completed(search_futures):
+                source = search_futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {"success": False, "source": source, "error": str(e), "content": "", "citations": []}
+                research_results.append(result)
+                ok      = result.get("success") and result.get("content")
+                content = str(result.get("content", ""))
+                status  = "✅" if ok else "❌"
+                print(f"  {status} {source} done at {time.time() - t_start:.1f}s — "
+                      f"{len(content)} chars | {len(result.get('citations', []))} citations")
+                if ok:
+                    print(f"     Preview: {content[:300]}")
+                else:
+                    print(f"     Error: {result.get('error')}")
 
-        print(f"⚡ All 3 searches completed in {time.time() - t_start:.1f}s")
+                # Start synthesis as soon as 2 results are ready — overlaps with slowest search
+                if len(research_results) == 2 and synthesis_future is None:
+                    print(f"🚀 Starting early synthesis with 2/3 results at {time.time() - t_start:.1f}s...")
+                    synthesis_future = executor.submit(
+                        self.calculate_similarity_and_synthesize,
+                        research_results.copy(),
+                        query,
+                    )
 
-        # ── Compact result summary ────────────────────────────────────────────
-        for r in research_results:
-            ok      = r.get('success') and r.get('content')
-            content = str(r.get('content', ''))
-            status  = "✅" if ok else "❌"
-            print(f"  {status} {r.get('source')}: {len(content)} chars | "
-                  f"{len(r.get('citations', []))} citations")
-            if ok:
-                print(f"     Preview: {content[:300]}")
-            else:
-                print(f"     Error: {r.get('error')}")
+            # Fallback: start synthesis if somehow not triggered above
+            if synthesis_future is None:
+                synthesis_future = executor.submit(
+                    self.calculate_similarity_and_synthesize,
+                    research_results,
+                    query,
+                )
+
+            synthesis_result = synthesis_future.result()
+
+        print(f"⚡ All 3 searches + synthesis completed in {time.time() - t_start:.1f}s")
 
         successful = [r for r in research_results if r.get('success') and r.get('content')]
         print(f"\n📊 {len(successful)}/3 sources with content")
         print(f"{'='*80}\n")
-        
-        # Calculate similarity and synthesize
-        print(f"🧪 Starting synthesis with {len(successful)} successful sources...")
-        synthesis_result = self.calculate_similarity_and_synthesize(research_results, query)
+
         print(f"🧪 Synthesis success: {synthesis_result.get('success')}")
         if not synthesis_result.get('success'):
             print(f"🧪 Synthesis error: {synthesis_result.get('error')}")
