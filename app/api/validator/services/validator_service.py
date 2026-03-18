@@ -396,13 +396,14 @@ You have 2 sources. Score based on their agreement:
 
         analysis_text += score_rubric
 
+        analysis_text += """
 Task 2: Synthesize Combined Research.
 Create a comprehensive, cohesive answer that combines the best factual information from all sources.
 Ensure inclusion of:
 - Name
 - Location
 - Ranking details (e.g., '#1 of 1 Things to Do in Sandy Point')
-- Price range or level ($–$$$$)
+- Price range or level ($-$$$$)
 - Average rating
 - Notable highlights or reviews
 - Category/type
@@ -474,7 +475,7 @@ Provide your response strictly in JSON format:
     def get_validated_research(self, query: str) -> Dict[str, Any]:
         """
         Main function to get validated research.
-        Loads whitelist domains for this query's category + country, then
+        Loads whitelist domains for this query category + country, then
         fires all 3 web searches in parallel via ThreadPoolExecutor.
         """
         print(f"\n{'='*80}")

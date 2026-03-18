@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(find:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m py_compile app/api/validator/services/validator_service.py)",
+      "Bash(python -m py_compile app/api/validator/routes.py)",
+      "Bash(python -m py_compile app/api/validator/models/schemas.py)",
+      "Bash(python -m py_compile app/api/validator/helpers.py)",
+      "Bash(python -m py_compile app/api/validator/services/whitelist_service.py)",
+      "Bash(2)",
+      "Bash(python -m compileall app/ -q)",
+      "Bash(python -c \":*)"
     ]
   }
 }
