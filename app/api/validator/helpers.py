@@ -48,7 +48,8 @@ async def get_google_maps_data(location_query: str, api_key: str) -> Optional[Di
 async def get_place_photo_url(place_id: str, api_key: str) -> Optional[str]:
     """
     Fetches the first photo for a place using the Place Details API.
-    Returns a direct photo URL (Google redirects photo_reference URLs to the image).
+    Follows Google's redirect to return the real CDN URL (lh3.googleusercontent.com)
+    which is shorter and contains no API key.
     """
     details_url = "https://maps.googleapis.com/maps/api/place/details/json"
     params = {
@@ -66,12 +67,20 @@ async def get_place_photo_url(place_id: str, api_key: str) -> Optional[str]:
                 if photos:
                     photo_ref = photos[0].get("photo_reference")
                     if photo_ref:
-                        url = (
+                        maps_url = (
                             f"https://maps.googleapis.com/maps/api/place/photo"
                             f"?maxwidth=800&photoreference={photo_ref}&key={api_key}"
                         )
-                        print(f"📸 Place photo URL obtained")
-                        return url
+                        # Follow the redirect — Google returns the real CDN URL
+                        # e.g. https://lh3.googleusercontent.com/places/...
+                        redirect_resp = await client.get(maps_url, follow_redirects=False)
+                        cdn_url = redirect_resp.headers.get("location")
+                        if cdn_url:
+                            print(f"📸 Photo CDN URL resolved: {cdn_url[:60]}...")
+                            return cdn_url
+                        # Fallback: return the maps URL if redirect didn't happen
+                        print(f"📸 No redirect — using maps URL")
+                        return maps_url
             print(f"📸 No photos found for place_id: {place_id} (status: {data.get('status')})")
     except Exception as e:
         print(f"📸 Error fetching place photo: {e}")

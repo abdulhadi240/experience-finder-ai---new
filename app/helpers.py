@@ -387,6 +387,7 @@ async def _main_stream(
     # ── Fire remaining tasks in parallel ─────────────────────────
     async def _summarize_then_rag() -> Dict[str, Any]:
         query = await summarize_for_rag(final_message)
+        print(f"📡 RAG QUERY: '{query}'")
         return await rag(query=query, reference=request.reference)
 
     rag_task        = asyncio.create_task(_summarize_then_rag())
