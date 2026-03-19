@@ -342,6 +342,60 @@ def _call_gemini(category: str, country: str, api_key: str) -> Dict[str, Any]:
 
 # ── Cap ────────────────────────────────────────────────────────────────────────
 MAX_WHITELIST_PER_CATEGORY = 5
+MAX_RETRY_ATTEMPTS = 3
+
+
+# ── Domain web-search verification ────────────────────────────────────────────
+
+def _verify_domain_has_content(
+    domain: str, category: str, country: str, api_key: str
+) -> bool:
+    """
+    Use OpenAI web search to confirm that the domain actually contains
+    listings/reviews for the given category in the given country.
+    Returns True if confirmed, False otherwise.
+    """
+    url = "https://api.openai.com/v1/responses"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        f"Visit the website {domain} and check whether it contains actual listings, "
+        f"reviews, or business information for '{category}' in '{country}'. "
+        f"Answer ONLY with a JSON object: {{\"has_content\": true}} or {{\"has_content\": false}}. "
+        f"Return true only if the site has real, relevant content for this category and country. "
+        f"No explanation, no markdown."
+    )
+    payload = {
+        "model": "gpt-4.1-mini",
+        "tools": [{"type": "web_search_preview"}],
+        "tool_choice": "required",
+        "input": prompt,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        # Extract text from output blocks
+        output = resp.json().get("output", [])
+        text = ""
+        for block in output:
+            if isinstance(block, dict) and block.get("type") == "message":
+                for part in block.get("content", []):
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        text += part.get("text", "")
+        # Parse the JSON answer
+        match = re.search(r'\{.*?"has_content"\s*:\s*(true|false).*?\}', text, re.IGNORECASE | re.DOTALL)
+        if match:
+            result = match.group(1).lower() == "true"
+            status = "✅" if result else "❌"
+            print(f"    {status} Web verify [{domain}] for {category}/{country}: {result}")
+            return result
+        print(f"    ⚠️  Could not parse verify response for {domain} — defaulting False")
+        return False
+    except Exception as e:
+        print(f"    ⚠️  Web verify failed for {domain}: {e}")
+        return False
 
 
 # ── Supabase helpers ───────────────────────────────────────────────────────────
@@ -391,13 +445,68 @@ class WhitelistDomainFinder:
 
     # ── Discovery ──────────────────────────────────────────────────────────────
 
+    def _run_llm_consensus(self, category: str, country: str) -> Set[str]:
+        """
+        Fire all 3 LLMs in parallel and return the consensus domain set.
+        Returns an empty set if fewer than 2 LLMs succeed.
+        """
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            f_openai     = pool.submit(_call_openai,     category, country, self.openai_key)
+            f_perplexity = pool.submit(_call_perplexity, category, country, self.perplexity_key)
+            f_gemini     = pool.submit(_call_gemini,     category, country, self.gemini_key)
+
+            results = [f_openai.result(), f_perplexity.result(), f_gemini.result()]
+
+        successful = [r for r in results if r["success"] and r["domains"]]
+
+        if len(successful) < 2:
+            print(f"  ⚠️  Fewer than 2 LLMs succeeded — no consensus possible")
+            return set()
+
+        domain_sets: List[Set[str]] = [set(r["domains"]) for r in successful]
+        consensus: Set[str] = domain_sets[0].intersection(*domain_sets[1:])
+
+        print(f"\n  📊 Consensus ({len(successful)}/3 LLMs):")
+        for r in successful:
+            print(f"       {r['llm']:12s} → {r['domains']}")
+        print(f"     ✅ Agreed (in ALL): {sorted(consensus)}")
+
+        return consensus
+
+    def _web_verify_domains(
+        self, domains: Set[str], category: str, country: str
+    ) -> Dict[str, bool]:
+        """
+        Run OpenAI web-search verification for each domain in parallel.
+        Returns {domain: True/False}.
+        """
+        print(f"\n  🌐 Web-verifying {len(domains)} domain(s)...")
+        results: Dict[str, bool] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(domains) or 1) as pool:
+            futures = {
+                pool.submit(
+                    _verify_domain_has_content, d, category, country, self.openai_key
+                ): d
+                for d in domains
+            }
+            for fut, domain in futures.items():
+                results[domain] = fut.result()
+        confirmed = [d for d, ok in results.items() if ok]
+        rejected  = [d for d, ok in results.items() if not ok]
+        print(f"  ✅ Confirmed: {sorted(confirmed)}")
+        if rejected:
+            print(f"  ❌ Rejected (no real content): {sorted(rejected)}")
+        return results
+
     def find_and_store(self, query: str) -> Dict[str, Any]:
         """
-        Extract category + country from the query, fire all 3 LLMs in parallel,
-        find consensus domains, and upsert them into whitelist_domains.
+        Extract category + country from the query, run LLM consensus to find
+        trusted domains, web-verify each one, and upsert only confirmed domains.
+        If no domain passes web verification, retries the full LLM consensus
+        up to MAX_RETRY_ATTEMPTS times before giving up.
         """
         category = _extract_category(query)
-        country = _extract_country_from_query(query, self.openai_key)
+        country  = _extract_country_from_query(query, self.openai_key)
 
         if not country:
             print(f"⚠️  Whitelist: could not extract country from '{query}' — skipping")
@@ -410,47 +519,7 @@ class WhitelistDomainFinder:
         print(f"   Country : {country}")
         print(f"{'─'*60}")
 
-        # ── Fire all 3 LLMs in parallel ────────────────────────────────────────
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            f_openai     = pool.submit(_call_openai,     category, country, self.openai_key)
-            f_perplexity = pool.submit(_call_perplexity, category, country, self.perplexity_key)
-            f_gemini     = pool.submit(_call_gemini,     category, country, self.gemini_key)
-
-            r_openai     = f_openai.result()
-            r_perplexity = f_perplexity.result()
-            r_gemini     = f_gemini.result()
-
-        results    = [r_openai, r_perplexity, r_gemini]
-        successful = [r for r in results if r["success"] and r["domains"]]
-
-        if len(successful) < 2:
-            print(f"⚠️  Whitelist: fewer than 2 LLMs succeeded — skipping upsert")
-            return {
-                "skipped": True,
-                "reason": "insufficient_llm_responses",
-                "category": category,
-                "country": country,
-            }
-
-        # ── Consensus: domain must appear in ALL successful LLM responses ──────
-        domain_sets: List[Set[str]] = [set(r["domains"]) for r in successful]
-        verified_domains: Set[str] = domain_sets[0].intersection(*domain_sets[1:])
-
-        print(f"\n  📊 Consensus ({len(successful)}/3 LLMs):")
-        for r in successful:
-            print(f"       {r['llm']:12s} → {r['domains']}")
-        print(f"     ✅ Verified (in ALL): {sorted(verified_domains)}")
-
-        if not verified_domains:
-            print(f"  ℹ️  No consensus domains — nothing to store")
-            return {
-                "category": category,
-                "country": country,
-                "verified": [],
-                "stored": 0,
-            }
-
-        # ── Cap: max 5 verified domains per category + country ────────────────
+        # ── Cap check upfront ─────────────────────────────────────────────────
         existing = _fetch_whitelist_sync(self._supabase, category, country)
         slots_available = MAX_WHITELIST_PER_CATEGORY - len(existing)
 
@@ -459,29 +528,69 @@ class WhitelistDomainFinder:
 
         if slots_available <= 0:
             print(f"  🔒 Cap reached ({MAX_WHITELIST_PER_CATEGORY}) for "
-                  f"[{category}/{country}] — no new domains stored")
+                  f"[{category}/{country}] — nothing to do")
             return {
                 "category": category,
                 "country": country,
-                "verified": sorted(verified_domains),
                 "stored": 0,
                 "capped": True,
                 "existing": existing,
             }
 
-        # Only take as many new domains as there are open slots.
-        # Exclude domains already stored, then take up to slots_available.
-        new_domains = sorted(verified_domains - set(existing))[:slots_available]
+        # ── Retry loop: consensus → web-verify → store ────────────────────────
+        all_verified_ever: Set[str] = set()
+        confirmed_domains: Set[str] = set()
 
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            print(f"\n  🔄 Attempt {attempt}/{MAX_RETRY_ATTEMPTS}")
+
+            consensus = self._run_llm_consensus(category, country)
+            if not consensus:
+                print(f"  ⚠️  No consensus on attempt {attempt} — retrying")
+                continue
+
+            all_verified_ever.update(consensus)
+
+            # Only web-verify domains not already confirmed or known bad
+            new_candidates = consensus - confirmed_domains - set(existing)
+            if not new_candidates:
+                print(f"  ℹ️  All consensus domains already processed — retrying for new ones")
+                continue
+
+            verify_results = self._web_verify_domains(new_candidates, category, country)
+            newly_confirmed = {d for d, ok in verify_results.items() if ok}
+            confirmed_domains.update(newly_confirmed)
+
+            if confirmed_domains:
+                print(f"  ✅ Web verification passed — proceeding to store")
+                break
+
+            print(f"  ❌ No domains passed web verification on attempt {attempt}"
+                  + (f" — retrying..." if attempt < MAX_RETRY_ATTEMPTS else " — giving up"))
+
+        # ── Store confirmed domains up to available slots ─────────────────────
+        if not confirmed_domains:
+            print(f"  ℹ️  No web-confirmed domains after {MAX_RETRY_ATTEMPTS} attempts — nothing stored")
+            return {
+                "category": category,
+                "country": country,
+                "consensus_found": sorted(all_verified_ever),
+                "web_confirmed": [],
+                "stored": 0,
+            }
+
+        new_domains = sorted(confirmed_domains - set(existing))[:slots_available]
         stored = self._upsert_domains(category, country, set(new_domains))
-        print(f"  💾 Stored {stored}/{len(new_domains)} new domains "
+
+        print(f"  💾 Stored {stored}/{len(new_domains)} web-confirmed domains "
               f"(cap: {MAX_WHITELIST_PER_CATEGORY})")
         print(f"{'─'*60}\n")
 
         return {
             "category": category,
             "country": country,
-            "verified": sorted(verified_domains),
+            "consensus_found": sorted(all_verified_ever),
+            "web_confirmed": sorted(confirmed_domains),
             "stored": stored,
             "existing": existing,
             "total_after": len(existing) + stored,

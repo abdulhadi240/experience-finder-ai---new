@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(find:*)",
       "Bash(cd:*)",
@@ -11,7 +12,8 @@
       "Bash(python -m py_compile app/api/validator/services/whitelist_service.py)",
       "Bash(2)",
       "Bash(python -m compileall app/ -q)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -c \"from app.api.validator.services.whitelist_service import WhitelistDomainFinder, _verify_domain_has_content; print\\(''✅ Import OK''\\)\")"
     ]
   }
 }
