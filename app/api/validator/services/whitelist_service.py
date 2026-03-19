@@ -47,7 +47,7 @@ Rules:
   used in {country}.
 - The domains must be well-known review or listing platforms — NOT blogs, news \
   sites, government sites, or social media.
-- Do NOT include: facebook.com, instagram.com, twitter.com, tiktok.com, youtube.com.
+- Do NOT include: facebook.com, instagram.com, twitter.com, tiktok.com, youtube.com, google.com.
 - Normalise each domain to lowercase with no "www." prefix.
 - Order from most authoritative to least.
 
@@ -69,6 +69,7 @@ Requirements:
 - Include both international platforms and country-specific ones popular in {country}.
 - Return ONLY lowercase root domain names (no www., no paths, no descriptions).
 - Exactly 5 domains, ranked by trustworthiness and popularity.
+- Do NOT include: google.com.
 
 Output — a JSON array only, nothing else:
 ["domain1.com", "domain2.com", "domain3.com", "domain4.com", "domain5.com"]"""
@@ -88,6 +89,7 @@ Criteria:
 - Include country-specific platforms popular in {country} alongside global ones.
 - Lowercase root domain only (no www., no paths).
 - Exactly 5 entries.
+- Do NOT include: google.com.
 
 Respond with ONLY a JSON array — no prose, no markdown, no code fences:
 ["domain1.com", "domain2.com", "domain3.com", "domain4.com", "domain5.com"]"""
@@ -215,10 +217,17 @@ def _normalise_domain(raw: str) -> Optional[str]:
     return raw if raw else None
 
 
+_BLOCKED_DOMAINS: Set[str] = {
+    "google.com",
+    "facebook.com", "instagram.com", "twitter.com", "tiktok.com", "youtube.com",
+}
+
+
 def _parse_domain_list(text: str) -> List[str]:
     """
     Extract a list of domain strings from an LLM response.
     Handles clean JSON arrays and recovers gracefully from minor formatting issues.
+    Blocked domains (e.g. google.com) are silently dropped.
     """
     match = re.search(r"\[.*?\]", text, re.DOTALL)
     if match:
@@ -228,7 +237,7 @@ def _parse_domain_list(text: str) -> List[str]:
                 result = []
                 for item in items:
                     d = _normalise_domain(str(item))
-                    if d:
+                    if d and d not in _BLOCKED_DOMAINS:
                         result.append(d)
                 return result
         except json.JSONDecodeError:
@@ -237,7 +246,7 @@ def _parse_domain_list(text: str) -> List[str]:
     result = []
     for m in re.finditer(r'"([^"]+)"', text):
         d = _normalise_domain(m.group(1))
-        if d:
+        if d and d not in _BLOCKED_DOMAINS:
             result.append(d)
     return result
 

@@ -240,6 +240,17 @@ async def delete_whitelist_domain(payload: dict):
         raise HTTPException(status_code=500, detail=f"Error deleting whitelist domain: {str(e)}")
 
 
+@router.delete("/whitelist/all")
+async def delete_all_whitelist_domains():
+    """Delete all rows from whitelist_domains table."""
+    try:
+        supabase_service = SupabaseService()
+        count = await supabase_service.delete_all_whitelist_domains()
+        return {"message": "All whitelist domains deleted", "deleted_count": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting all whitelist domains: {str(e)}")
+
+
 @router.get("/saved-queries")
 async def get_saved_queries():
     """Return all non-expired saved queries."""

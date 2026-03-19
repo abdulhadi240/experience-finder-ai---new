@@ -201,3 +201,17 @@ class SupabaseService:
         except Exception as e:
             print(f"Error deleting whitelist_domain: {e}")
             raise
+
+    async def delete_all_whitelist_domains(self) -> int:
+        """Delete all rows from whitelist_domains. Returns deleted count."""
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.table("whitelist_domains")
+                .delete()
+                .neq("id", "00000000-0000-0000-0000-000000000000")
+                .execute()
+            )
+            return len(response.data) if response.data else 0
+        except Exception as e:
+            print(f"Error deleting all whitelist_domains: {e}")
+            raise

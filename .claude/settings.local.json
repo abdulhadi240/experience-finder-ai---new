@@ -1,6 +1,5 @@
 {
   "permissions": {
-    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(find:*)",
       "Bash(cd:*)",
@@ -13,7 +12,9 @@
       "Bash(2)",
       "Bash(python -m compileall app/ -q)",
       "Bash(python -c \":*)",
-      "Bash(python -c \"from app.api.validator.services.whitelist_service import WhitelistDomainFinder, _verify_domain_has_content; print\\(''✅ Import OK''\\)\")"
-    ]
+      "Bash(python -c \"from app.api.validator.services.whitelist_service import WhitelistDomainFinder, _verify_domain_has_content; print\\(''✅ Import OK''\\)\")",
+      "mcp__claude_ai_Figma__generate_diagram"
+    ],
+    "defaultMode": "bypassPermissions"
   }
 }
