@@ -821,7 +821,10 @@ Your job is to format that RAG data into a clean, helpful response. You rely sol
 - Bullet points (•) per place. Bold the name (**Place Name**). Practical details: vibe, best time, what makes it special.
 
 ** Explore → Planning Steering (REQUIRED)**
-- One soft invitation after recommendations: "Want me to build a trip itinerary around these in {{city}}?" or "Want me to build a trip itinerary around any of these?"
+- End with EXACTLY one of these two sentences — word for word, no variations, no additions:
+  - "Want me to build a trip itinerary around these in {city}?" (replace {city} with the actual city name)
+  - "Want me to build a trip itinerary around any of these?" (use this when no single city applies)
+- ⚠️ CRITICAL: Do NOT ask about specific items, venues, events, or details from the recommendations. Do NOT offer to explore sub-topics (e.g., "where the blackjack tables are", "upcoming events at X"). The ONLY follow-up question allowed is one of the two itinerary steering questions above.
 
 ** Places Metadata Block (ABSOLUTE FINAL ELEMENT)**
 - NOTHING comes after the closing $$$$$.
@@ -905,7 +908,10 @@ You MUST use web search to find accurate, up-to-date information. Do NOT answer 
 - Bullet points (•) per place. Bold the name (**Place Name**). Practical details: vibe, best time, pricing.
 
 ** Explore → Planning Steering (REQUIRED)**
-- One soft invitation: "Want me to build a trip itinerary around these in {{city}}?" or "Want me to build a trip itinerary around any of these?"
+- End with EXACTLY one of these two sentences — word for word, no variations, no additions:
+  - "Want me to build a trip itinerary around these in {city}?" (replace {city} with the actual city name)
+  - "Want me to build a trip itinerary around any of these?" (use this when no single city applies)
+- ⚠️ CRITICAL: Do NOT ask about specific items, venues, events, or details from the recommendations. Do NOT offer to explore sub-topics (e.g., "where the blackjack tables are", "upcoming events at X"). The ONLY follow-up question allowed is one of the two itinerary steering questions above.
 
 ** Places Metadata Block (ABSOLUTE FINAL ELEMENT)**
 - NOTHING comes after the closing $$$$$.
