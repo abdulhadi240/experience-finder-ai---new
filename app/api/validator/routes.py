@@ -4,9 +4,10 @@ Handles classification, research validation, OpenAI conversion, and Supabase sto
 """
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
-from app.api.validator.models.schemas import ValidatorRequest, RAGUpsertRequest, RAGUpsertResponse
+from app.api.validator.models.schemas import ValidatorRequest, RAGUpsertResponse, FrontendRAGUpsertRequest
 from app.api.validator.services.supabase_service import SupabaseService
 from app.api.validator.helpers import is_duplicate_query, process_in_background, process_deep_validation
 
@@ -283,12 +284,12 @@ async def delete_all_saved_queries():
 # RAG Upsert Endpoint
 # -------------------------------------------------------
 @router.post("/rag/upsert", response_model=RAGUpsertResponse)
-async def rag_upsert(request: RAGUpsertRequest):
+async def rag_upsert(request: FrontendRAGUpsertRequest):
     """
     Upsert a single document into the RAG index.
 
-    This endpoint validates the payload and forwards it to the RAG system
-    at https://rag.hiptraveler.com/upsert
+    Accepts the full payload from the frontend. updated_at is auto-generated.
+    Forwards the payload to https://rag.hiptraveler.com/upsert.
     """
     print(f"\n{'='*80}")
     print("📤 RAG UPSERT REQUEST RECEIVED")
@@ -300,11 +301,26 @@ async def rag_upsert(request: RAGUpsertRequest):
     print(f"Query: {request.query}")
     print(f"{'='*80}\n")
 
-    # Validate language code
     allowed_languages = ["en", "fr", "it", "de", "es", "zh"]
     language = request.language if request.language in allowed_languages else "en"
+    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Build the payload for RAG API
+    # Build meta_obj — pass all provided fields through
+    meta_obj: dict = {"location": request.meta_obj.location}
+    if request.meta_obj.audience:
+        meta_obj["audience"] = request.meta_obj.audience
+    if request.meta_obj.rating is not None:
+        meta_obj["rating"] = request.meta_obj.rating
+    if request.meta_obj.numReviews is not None:
+        meta_obj["numReviews"] = request.meta_obj.numReviews
+    if request.meta_obj.ranking:
+        meta_obj["ranking"] = request.meta_obj.ranking
+    if request.meta_obj.priceLevel:
+        meta_obj["priceLevel"] = request.meta_obj.priceLevel
+    if request.meta_obj.hours:
+        meta_obj["hours"] = request.meta_obj.hours
+
+    # Build the RAG payload
     payload = {
         "id": request.id,
         "title": request.title,
@@ -313,14 +329,11 @@ async def rag_upsert(request: RAGUpsertRequest):
         "category": request.category,
         "country": request.country,
         "city": request.city,
-        "meta_obj": {
-            "address": request.meta_obj.address
-        },
-        "updated_at": request.updated_at,
-        "language": language
+        "meta_obj": meta_obj,
+        "updated_at": updated_at,
+        "language": language,
     }
 
-    # Add optional fields if provided
     if request.tags:
         payload["tags"] = request.tags
     if request.source:
@@ -334,24 +347,10 @@ async def rag_upsert(request: RAGUpsertRequest):
     if request.image:
         payload["image"] = request.image
 
-    # Add optional meta_obj fields
-    if request.meta_obj.ranking:
-        payload["meta_obj"]["ranking"] = request.meta_obj.ranking
-    if request.meta_obj.audience:
-        payload["meta_obj"]["audience"] = request.meta_obj.audience
-    if request.meta_obj.priceLevel:
-        payload["meta_obj"]["priceLevel"] = request.meta_obj.priceLevel
-    if request.meta_obj.hours:
-        payload["meta_obj"]["hours"] = request.meta_obj.hours
-    if request.meta_obj.rating is not None:
-        payload["meta_obj"]["rating"] = request.meta_obj.rating
-    if request.meta_obj.numReviews is not None:
-        payload["meta_obj"]["numReviews"] = request.meta_obj.numReviews
-
     print(f"📦 Payload to send to RAG:")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    # Send to RAG API
+    # Forward to RAG API
     rag_url = "https://rag.hiptraveler.com/upsert"
     headers = {
         "Content-Type": "application/json",
@@ -388,3 +387,59 @@ async def rag_upsert(request: RAGUpsertRequest):
         error_msg = f"Failed to upsert to RAG: {str(e)}"
         print(f"\n❌ RAG UPSERT FAILED: {error_msg}\n")
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+# -------------------------------------------------------
+# Insert Sample Research Insight
+# -------------------------------------------------------
+@router.post("/insights/sample")
+async def insert_sample_insight():
+    """Insert a sample record into the research_insights table."""
+    supabase_service = SupabaseService()
+    sample = {
+        "query": "Port Grand Pakistan Karachi",
+        "title": "Port Grand Pakistan",
+        "content": (
+            "Port Grand is a vibrant waterfront entertainment and dining complex located along "
+            "Karachi's historic Native Jetty Bridge. Stretching along the harbor, it offers a "
+            "lively promenade filled with restaurants, cafés, street food stalls, and cultural "
+            "events, all set against scenic views of the Arabian Sea and Karachi Port. The area "
+            "blends history with modern leisure, making it a popular spot for evening walks, "
+            "family outings, and experiencing Karachi's food and cultural scene."
+        ),
+        "category": "Hip Place",
+        "country": "Pakistan",
+        "city": "Karachi",
+        "region_code": "",
+        "latitude": 24.844986,
+        "longitude": 66.99099,
+        "language": "en",
+        "tags": "Shopping Malls, Cultural landmark, Scenic Outlook",
+        "source": "https://www.tripadvisor.com/Attraction_Review-g295414-d2419975-Reviews-Port_Grand_Pakistan-Karachi_Sindh_Province.html",
+        "image": "https://media-cdn.tripadvisor.com/media/photo-m/1280/15/32/e5/a3/a-grand-view-of-our-port.jpg",
+        "meta_obj": {
+            "location": "Port Grand Food Street road opposite PNSC Building, Karachi 74000 Pakistan",
+            "audience": ["FAMILY", "FRIENDS GETAWAY"],
+            "rating": 4.3,
+            "numReviews": 343
+        },
+    }
+    try:
+        record = await supabase_service.insert_research_insight(sample)
+        return {"success": True, "message": "Sample record inserted", "data": record}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to insert sample: {str(e)}")
+
+
+# -------------------------------------------------------
+# Delete All Research Insights
+# -------------------------------------------------------
+@router.delete("/insights/all")
+async def delete_all_insights():
+    """Delete all rows from the research_insights table."""
+    supabase_service = SupabaseService()
+    try:
+        deleted = await supabase_service.delete_all_research_insights()
+        return {"success": True, "deleted": deleted, "message": f"Deleted {deleted} records from research_insights"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete research_insights: {str(e)}")

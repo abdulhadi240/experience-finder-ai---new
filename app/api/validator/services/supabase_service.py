@@ -37,7 +37,8 @@ class SupabaseService:
             "longitude": float(attraction_data.get("longitude")) if attraction_data.get("longitude") else None,
             "language": attraction_data.get("language", "en"),
             "tags": attraction_data.get("tags"),
-            "source": "web search",
+            "source": attraction_data.get("source"),
+            "image": attraction_data.get("image"),
             "meta_obj": attraction_data.get("meta_obj"),
         }
         insert_data = {k: v for k, v in insert_data.items() if v is not None}
@@ -52,6 +53,22 @@ class SupabaseService:
             raise RuntimeError("No data returned from insert operation")
         except Exception as e:
             print(f"Error inserting into Supabase: {e}")
+            raise
+
+    async def delete_all_research_insights(self) -> int:
+        """Delete all rows from research_insights. Returns deleted count."""
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.table(self.table_name)
+                .delete()
+                .neq("id", "00000000-0000-0000-0000-000000000000")
+                .execute()
+            )
+            deleted = len(response.data) if response.data else 0
+            print(f"🗑️ Deleted {deleted} rows from research_insights")
+            return deleted
+        except Exception as e:
+            print(f"Error deleting research_insights: {e}")
             raise
 
     async def get_insights_by_query(self, query: str) -> List[Dict[str, Any]]:

@@ -87,6 +87,67 @@ async def get_place_photo_url(place_id: str, api_key: str) -> Optional[str]:
     return None
 
 
+async def get_place_details(place_id: str, api_key: str) -> Dict[str, Any]:
+    """
+    Fetches place details (photo URL, rating, num reviews, opening hours) in a single
+    Place Details API call. Returns a dict with keys: photo_url, rating, num_reviews, hours.
+    """
+    details_url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "photos,rating,user_ratings_total,opening_hours",
+        "key": api_key,
+    }
+    result: Dict[str, Any] = {"photo_url": None, "rating": None, "num_reviews": None, "hours": None}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(details_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") == "OK":
+                place = data.get("result", {})
+
+                # Photo
+                photos = place.get("photos", [])
+                if photos:
+                    photo_ref = photos[0].get("photo_reference")
+                    if photo_ref:
+                        maps_url = (
+                            f"https://maps.googleapis.com/maps/api/place/photo"
+                            f"?maxwidth=800&photoreference={photo_ref}&key={api_key}"
+                        )
+                        redirect_resp = await client.get(maps_url, follow_redirects=False)
+                        cdn_url = redirect_resp.headers.get("location")
+                        result["photo_url"] = cdn_url if cdn_url else maps_url
+                        print(f"📸 Photo resolved for place_id={place_id}")
+
+                # Rating & reviews
+                if place.get("rating") is not None:
+                    result["rating"] = place["rating"]
+                if place.get("user_ratings_total") is not None:
+                    result["num_reviews"] = place["user_ratings_total"]
+
+                # Opening hours — store as {day: hours_string} dict
+                opening_hours = place.get("opening_hours", {})
+                weekday_text = opening_hours.get("weekday_text", [])
+                if weekday_text:
+                    hours_dict = {}
+                    for entry in weekday_text:
+                        # e.g. "Monday: 9:00 AM – 5:00 PM"
+                        if ": " in entry:
+                            day, times = entry.split(": ", 1)
+                            hours_dict[day] = times
+                    if hours_dict:
+                        result["hours"] = hours_dict
+
+                print(f"📍 Place details fetched: rating={result['rating']}, reviews={result['num_reviews']}, hours={'yes' if result['hours'] else 'no'}")
+            else:
+                print(f"📍 Place Details API error: {data.get('status')}")
+    except Exception as e:
+        print(f"📍 Error fetching place details: {e}")
+    return result
+
+
 # -------------------------------------------------------
 # Helper: RAG Upsert
 # -------------------------------------------------------
@@ -538,7 +599,8 @@ async def process_query_research(
                     if specific_maps and specific_maps.get("place_id"):
                         place_maps_data = specific_maps
                         print(f"✅ Specific place found: place_id={specific_maps['place_id']}")
-                        place_image = await get_place_photo_url(specific_maps["place_id"], api_key)
+                        place_details = await get_place_details(specific_maps["place_id"], api_key)
+                        place_image = place_details["photo_url"]
                         # Update lat/lng from specific place
                         geom = specific_maps.get("geometry", {}).get("location", {})
                         if geom.get("lat"):
@@ -548,6 +610,14 @@ async def process_query_research(
                         # Update meta_obj location with specific address
                         if specific_maps.get("formatted_address"):
                             formatted_data.setdefault("meta_obj", {})["location"] = specific_maps["formatted_address"]
+                        # Populate meta_obj with rating, numReviews, hours from Place Details
+                        meta = formatted_data.setdefault("meta_obj", {})
+                        if place_details["rating"] is not None:
+                            meta["rating"] = place_details["rating"]
+                        if place_details["num_reviews"] is not None:
+                            meta["numReviews"] = place_details["num_reviews"]
+                        if place_details["hours"]:
+                            meta["hours"] = place_details["hours"]
                     else:
                         print(f"⚠️  Specific place not found for '{specific_query}', using city-level maps data")
 
