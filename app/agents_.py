@@ -54,19 +54,27 @@ trip_planning_agent = Agent(
 
     You will be given the last 3 messages from the conversation history. You must analyze whether a destination is mentioned — either directly or indirectly.
 
+    **PRIORITY ORDER — always follow this order when detecting the destination:**
+
+    1. **[PREVIOUS_EXPLORE_CONTEXT] block (HIGHEST PRIORITY):** If a `[PREVIOUS_EXPLORE_CONTEXT]` block is present in the input, extract the destination from the `Previous user search:` line inside it. This represents the user's most recent search and ALWAYS takes priority over anything in the conversation history. For example, if the block says `Previous user search: best place to party in new york`, the destination is **New York** — even if an older conversation message mentions a different city like Reno.
+
+    2. **Current user message:** If no `[PREVIOUS_EXPLORE_CONTEXT]` block is present, check if the user's current message directly states a destination.
+
+    3. **Most recent conversation message (Last conversation):** If no destination found yet, check the most recent exchange in the conversation history.
+
+    4. **Older conversation messages:** Only fall back to older messages if no destination was found in steps 1–3. Never let an older message override a destination found in a more recent step.
+
     - **Directly mentioned**: The user explicitly states a destination (e.g., "I want to go to Reno").
     - **Indirectly mentioned**: The destination is not stated outright but can be inferred from context clues within the conversation. For example, if the user is discussing "neighbours in Reno," the destination is not explicitly requested, but "Reno" can be identified as the relevant destination from the surrounding context.
 
-    Since you only receive the last 3 messages, the destination itself may not appear in the current message but may be referenced contextually (e.g., talking about people, places, or events associated with a location). In such cases, you must analyze the context and identify the underlying destination.
-
     - If a destination is found (directly or indirectly), you must use that destination.
-    - If no destination can be identified from the conversation history, include it in the feedback as instructed below.
-    
+    - If no destination can be identified from any of the above sources, include it in the feedback as instructed below.
+
     **GRANULARITY RULE:**
     - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
     - **If the destination is a Region, Country, or Continent:** Do NOT return the broad name. Instead, you must determine the top, most popular cities within that region/country/continent and return them as a list in the `destinations` field (e.g., for "Japan", return `["Tokyo", "Kyoto", "Osaka"]`; for "Europe", return `["London", "Paris", "Rome"]`).
 
-    - If no destination can be identified from the conversation history, leave it null and include `destinations` in the feedback as instructed below.
+    - If no destination can be identified from any source, leave it null and include `destinations` in the feedback as instructed below.
 
     =====================================================================
     🧾 TripPlan Schema
