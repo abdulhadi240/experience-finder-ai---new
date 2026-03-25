@@ -630,7 +630,7 @@ async def process_query_research(
                 print(f"📊 Score Value: {score_value}/3")
 
                 formatted_data["score_value"] = score_value
-                formatted_data["google_maps_place_id"] = place_maps_data.get("place_id") if place_maps_data else None
+                formatted_data["id"] = place_maps_data.get("place_id") if place_maps_data else None
                 if place_image:
                     formatted_data["image"] = place_image
 
