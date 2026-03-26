@@ -72,9 +72,38 @@ trip_planning_agent = Agent(
 
     **GRANULARITY RULE:**
     - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
-    - **If the destination is a Region, Country, or Continent:** Do NOT return the broad name. Instead, you must determine the top, most popular cities within that region/country/continent and return them as a list in the `destinations` field (e.g., for "Japan", return `["Tokyo", "Kyoto", "Osaka"]`; for "Europe", return `["London", "Paris", "Rome"]`).
+    - **If the destination is a Region, Country, or Continent:** Keep the broad name as-is in `destinations` for now — the CITY PREFERENCE RULE below will handle expanding it into specific cities after asking the user.
 
     - If no destination can be identified from any source, leave it null and include `destinations` in the feedback as instructed below.
+
+    =====================================================================
+    🌍 CITY PREFERENCE RULE
+    =====================================================================
+
+    This rule fires when `destinations` contains only country, continent, or broad region names — NOT specific cities.
+
+    **Examples that trigger this rule:**
+    - "Mexico", "Japan", "France", "Thailand", "Australia" (countries)
+    - "Europe", "Southeast Asia", "The Caribbean", "South America" (continents/regions)
+
+    **Examples that do NOT trigger this rule (already a city):**
+    - "Mexico City", "Tokyo", "Paris", "Bangkok", "Sydney"
+
+    **When to apply:**
+    - `destinations` contains only country/continent/region-level name(s)
+    - AND the user has NOT yet specified which city or cities they want to visit
+
+    **Action:**
+    - Keep `destinations` as-is (the country/region name)
+    - Add `cityPreference` to the `feedback` list as the VERY FIRST item — before `startDate`, `numDays`, `pax`, or any other field
+
+    **When the user responds to the city preference question:**
+    - If they name specific cities (e.g., "Mexico City and Cancun") → extract those cities, update `destinations` to those cities, remove `cityPreference` from feedback
+    - If they say they have no preference / "you choose" / "best ones" / "doesn't matter" / "surprise me" / any equivalent → auto-select 3–4 top popular cities for that country (e.g., for Mexico: `["Mexico City", "Cancun", "Guadalajara"]`), remove `cityPreference` from feedback
+
+    **Override — do NOT add `cityPreference` if:**
+    - The user has already named specific cities in the conversation
+    - `destinations` already contains city-level names
 
     =====================================================================
     🧾 TripPlan Schema
@@ -152,8 +181,14 @@ trip_planning_agent = Agent(
 
     Construct the `feedback` list by checking these specific fields in the order below.
 
+    **Step 0 — City Preference Check** (ALWAYS run this FIRST, before any other field):
+        * Apply the CITY PREFERENCE RULE above.
+        * If `destinations` contains only country/continent/region-level names AND the user has not yet named specific cities → add `cityPreference` as the VERY FIRST item in feedback.
+        * `cityPreference` takes absolute priority over all other feedback fields — it always comes before `startDate`, `numDays`, `pax`, etc.
+        * If `cityPreference` is in feedback → still evaluate all other fields normally and append them after `cityPreference`.
+
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
-        * `startDate` (if condition passed — ALWAYS first if included)
+        * `startDate` (if condition passed — ALWAYS first among date/pax/style fields, but AFTER `cityPreference` if present)
         * `numDays` — **ONLY if `numDays` is null**. If it has any value (calculated or explicit) → **NEVER** in feedback.
         * `destinations` — **ONLY if `destinations` is an empty list `[]`**. If it contains ANY value, do NOT add.
         * `pax` — **ONLY if `pax` is null**. If any traveller count was given, do NOT add.
@@ -168,9 +203,10 @@ trip_planning_agent = Agent(
         - `activities` is not null → **NEVER** in feedback.
 
         **ORDERING RULE:**
-        - `startDate` must ALWAYS be first in feedback when included.
+        - `cityPreference` must ALWAYS be first in feedback when the CITY PREFERENCE RULE applies.
+        - `startDate` is first among the remaining fields when `cityPreference` is NOT present.
         - `numDays` comes immediately after `startDate` when both are present.
-        - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` is FIRST in feedback.
+        - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` is first among remaining fields.
         - `numDays` inclusion NEVER depends on whether `startDate` is in feedback.
 
         **DO NOT** add `experienceTypes` to feedback.
@@ -205,14 +241,19 @@ trip_planning_agent = Agent(
 
     **Canonical question map — use exactly these questions, word for word:**
 
-    | feedback[0]   | summary question to use                                  |
-    |---------------|----------------------------------------------------------|
-    | startDate     | "What dates are you planning to travel?"                 |
-    | numDays       | "How many days are you planning to stay?"                |
-    | destinations  | "Where would you like to go?"                            |
-    | pax           | "How many travellers will be joining?"                   |
-    | travelStyle   | "What travel style suits you best?"                      |
-    | activities    | "What kind of activities are you interested in?"         |
+    | feedback[0]      | summary question to use                                                                                      |
+    |------------------|--------------------------------------------------------------------------------------------------------------|
+    | cityPreference   | "Which cities in [DESTINATION] are you thinking? Or I can choose the best ones for you."                    |
+    | startDate        | "What dates are you planning to travel?"                                                                     |
+    | numDays          | "How many days are you planning to stay?"                                                                    |
+    | destinations     | "Where would you like to go?"                                                                                |
+    | pax              | "How many travellers will be joining?"                                                                       |
+    | travelStyle      | "What travel style suits you best?"                                                                          |
+    | activities       | "What kind of activities are you interested in?"                                                             |
+
+    **`cityPreference` special case:**
+    Replace `[DESTINATION]` in the question with the actual country/region name from `destinations[0]`.
+    Example: if destinations = ["Mexico"] → "Which cities in Mexico are you thinking? Or I can choose the best ones for you."
 
     **`numDays` special case — date refusal context:**
     If `numDays` is `feedback[0]` AND `startDate` was permanently excluded because the user refused/deferred dates (e.g., said "no dates yet", "flexible", "not sure", etc.):
