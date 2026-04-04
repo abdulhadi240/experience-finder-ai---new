@@ -132,6 +132,25 @@ trip_planning_agent = Agent(
     ```
 
     =====================================================================
+    🚨 STARTDATE ABSOLUTE RULE
+    =====================================================================
+
+    `startDate` MUST appear as the first item in `feedback` (after `pois`/`cityPreference` if present) whenever ALL of the following are true:
+    1. `startDate` is null
+    2. The user has NOT refused/deferred dates (no negative constraint phrase)
+    3. `numDays` is also null
+
+    **Nothing overrides this rule except a negative constraint or a non-null `numDays`.**
+
+    The following do NOT suppress `startDate` from feedback:
+    - ❌ `month` being set (e.g. "July", "September") — a month name is NOT a start date
+    - ❌ `destinations` being known
+    - ❌ Any other field being set or null
+    - ❌ Any assumption or inference about the user's intent
+
+    If you find yourself about to output a feedback list that starts with `numDays` while `startDate` is null and no negative constraint applies — STOP and put `startDate` first.
+
+    =====================================================================
     🛑 NEGATIVE CONSTRAINTS — DATE REFUSAL DETECTION
     =====================================================================
 
