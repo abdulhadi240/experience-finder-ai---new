@@ -135,7 +135,7 @@ trip_planning_agent = Agent(
     🚨 STARTDATE ABSOLUTE RULE
     =====================================================================
 
-    `startDate` MUST appear as the first item in `feedback` (after `pois`/`cityPreference` if present) whenever ALL of the following are true:
+    `startDate` MUST appear as the VERY FIRST item in `feedback` whenever ALL of the following are true:
     1. `startDate` is null
     2. The user has NOT refused/deferred dates (no negative constraint phrase)
     3. `numDays` is also null
@@ -213,9 +213,9 @@ trip_planning_agent = Agent(
         * If `cityPreference` is in feedback → still evaluate all other fields normally and append them after `cityPreference`.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
-        * `pois` — ALWAYS evaluated first. Add to feedback if `pois` is an empty list `[]` AND the user has not explicitly delegated POI selection to the agent. A destination being known does NOT automatically resolve pois — the user must either provide them or explicitly say "you choose".
-        * `startDate` (if condition passed — ALWAYS first among date/pax/style fields, but AFTER `pois`/`cityPreference` if present)
+        * `startDate` — ALWAYS first in feedback unless suppressed by a negative constraint or non-null `numDays`. See 🚨 STARTDATE ABSOLUTE RULE above.
         * `numDays` — **ONLY if `numDays` is null**. If it has any value (calculated or explicit) → **NEVER** in feedback.
+        * `pois` — Add to feedback if `pois` is an empty list `[]` AND the user has not explicitly delegated POI selection to the agent. A destination being known does NOT automatically resolve pois — the user must either provide them or explicitly say "you choose".
         * `destinations` — **ONLY if `destinations` is an empty list `[]`**. If it contains ANY value, do NOT add.
         * `pax` — **ONLY if `pax` is null**. If any traveller count was given, do NOT add.
         * `travelStyle` — ONLY if null.
@@ -229,12 +229,17 @@ trip_planning_agent = Agent(
         - `travelStyle` is not null → **NEVER** in feedback.
         - `activities` is not null → **NEVER** in feedback.
 
-        **ORDERING RULE:**
-        - `pois` comes first when destination is unknown (cannot auto-populate).
-        - `cityPreference` comes after `pois` when the CITY PREFERENCE RULE applies.
-        - `startDate` is first among the remaining fields.
-        - `numDays` comes immediately after `startDate` when both are present.
-        - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` is first among remaining fields.
+        **ORDERING RULE (strict):**
+        1. `startDate` — always first (unless suppressed)
+        2. `numDays` — immediately after `startDate` when both present
+        3. `pois` — after date fields
+        4. `destinations` — if still unknown
+        5. `pax`
+        6. `travelStyle`
+        7. `activities`
+
+        - `cityPreference` overrides position 1 only when the CITY PREFERENCE RULE applies (country-level destination, no city named yet).
+        - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` moves to position 1.
         - `numDays` inclusion NEVER depends on whether `startDate` is in feedback.
 
         **DO NOT** add `experienceTypes` to feedback.
@@ -272,10 +277,10 @@ trip_planning_agent = Agent(
 
     | feedback[0]      | summary question to use                                                                                                      |
     |------------------|------------------------------------------------------------------------------------------------------------------------------|
-    | pois             | "Are there specific places you'd like to visit in [DESTINATION]? Or I can pick the top ones for you — just say the word."   |
-    | cityPreference   | "Which cities in [DESTINATION] are you thinking? Or I can choose the best ones for you."                                    |
     | startDate        | "What dates are you planning to travel?"                                                                                     |
     | numDays          | "How many days are you planning to stay?"                                                                                    |
+    | pois             | "Are there specific places you'd like to visit in [DESTINATION]? Or I can pick the top ones for you — just say the word."   |
+    | cityPreference   | "Which cities in [DESTINATION] are you thinking? Or I can choose the best ones for you."                                    |
     | destinations     | "Where would you like to go?"                                                                                                |
     | pax              | "How many travellers will be joining?"                                                                                       |
     | travelStyle      | "What travel style suits you best?"                                                                                          |
