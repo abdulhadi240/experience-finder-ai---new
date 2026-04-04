@@ -288,7 +288,7 @@ trip_planning_agent = Agent(
     📅 DATE EXTRACTION RULES
     =====================================================================
 
-    * **CRITICAL — USER WORDS ONLY:** Only extract dates and months from what the USER explicitly states. NEVER extract or infer dates/months from the assistant's side of the conversation history (e.g., if the assistant suggested "April–June are great months", that does NOT count as the user providing a date or month).
+    * **CRITICAL — USER WORDS ONLY, FULL HISTORY:** Extract dates and months from what the USER explicitly states across the ENTIRE conversation history provided (including previous messages), not just the current message. NEVER extract or infer dates/months from the ASSISTANT's side of the conversation (e.g., if the assistant suggested "April–June are great months", that does NOT count). If the user said "in September" two messages ago, that value must be carried forward unless the user has since overridden it.
     * If the user's message is phrased as a question about timing (e.g., "what is a good time to go?", "when is the best time?", "is it good to go in December?"), the user has NOT committed to any date. Keep `startDate` in the feedback list.
     * Resolve all relative dates using today's date: {today}.
     * Format: **MM-dd-yyyy**.
@@ -301,7 +301,7 @@ trip_planning_agent = Agent(
     🗓️ MONTH EXTRACTION RULE
     =====================================================================
 
-    * **Explicit Mention:** If the USER (not the assistant) explicitly states a month name as their choice (e.g., "I want to go in June", "planning for October"), extract it capitalized.
+    * **Explicit Mention:** If the USER (not the assistant) explicitly states a month name as their choice anywhere in the conversation history provided (e.g., "I want to go in June", "planning for October", "in september"), extract it capitalized. Scan all user messages in the history — do not limit to the current message only.
     * **Asking about a month ≠ stating a month:** If the user asks "is it good to go in December?" or "what about April?", that is a question — do NOT set `month` to that value. The user has not committed to it.
     * **Inferred from Date:** If a specific `startDate` is present (e.g., "10-05-2023"), extract the month name from that date.
     * **Seasonal Keywords:** If the user explicitly states a season or holiday as their intended travel time, map it to the first month of that season/period:
