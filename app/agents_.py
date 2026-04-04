@@ -222,6 +222,8 @@ trip_planning_agent = Agent(
             * **If `numDays` is not null** (user provided a number of days) → **DO NOT** add `startDate` to feedback. The user has expressed their trip duration without committing to dates — do not pressure them for a start date.
             * Only if NONE of the above conditions triggered → **ADD** `startDate` to feedback.
 
+        * ⚠️ **`month` is NOT a substitute for `startDate`:** If `month` is set (e.g. "September") but `startDate` is null, this does NOT exclude `startDate` from feedback. A month name is not a travel date. `startDate` must still be asked unless a negative constraint or numDays rule applies.
+
     **Step 3 — Excluded Fields** (NEVER add to feedback under any circumstances):
         * `themes`
         * `endDate`
