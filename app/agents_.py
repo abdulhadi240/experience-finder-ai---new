@@ -188,7 +188,8 @@ trip_planning_agent = Agent(
         * If `cityPreference` is in feedback → still evaluate all other fields normally and append them after `cityPreference`.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
-        * `startDate` (if condition passed — ALWAYS first among date/pax/style fields, but AFTER `cityPreference` if present)
+        * `pois` — ALWAYS evaluated first. Add to feedback if `pois` is an empty list `[]` AND the user has not explicitly delegated POI selection to the agent. A destination being known does NOT automatically resolve pois — the user must either provide them or explicitly say "you choose".
+        * `startDate` (if condition passed — ALWAYS first among date/pax/style fields, but AFTER `pois`/`cityPreference` if present)
         * `numDays` — **ONLY if `numDays` is null**. If it has any value (calculated or explicit) → **NEVER** in feedback.
         * `destinations` — **ONLY if `destinations` is an empty list `[]`**. If it contains ANY value, do NOT add.
         * `pax` — **ONLY if `pax` is null**. If any traveller count was given, do NOT add.
@@ -196,6 +197,7 @@ trip_planning_agent = Agent(
         * `activities` — ONLY if null.
 
         **POPULATED = NOT IN FEEDBACK. This is absolute:**
+        - `pois` has 1+ items (user-provided OR explicitly delegated to agent) → **NEVER** in feedback.
         - `numDays` is not null (any value, even calculated from dates) → **NEVER** in feedback.
         - `destinations` has 1+ items → **NEVER** in feedback.
         - `pax` is not null → **NEVER** in feedback.
@@ -203,8 +205,9 @@ trip_planning_agent = Agent(
         - `activities` is not null → **NEVER** in feedback.
 
         **ORDERING RULE:**
-        - `cityPreference` must ALWAYS be first in feedback when the CITY PREFERENCE RULE applies.
-        - `startDate` is first among the remaining fields when `cityPreference` is NOT present.
+        - `pois` comes first when destination is unknown (cannot auto-populate).
+        - `cityPreference` comes after `pois` when the CITY PREFERENCE RULE applies.
+        - `startDate` is first among the remaining fields.
         - `numDays` comes immediately after `startDate` when both are present.
         - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` is first among remaining fields.
         - `numDays` inclusion NEVER depends on whether `startDate` is in feedback.
@@ -221,7 +224,6 @@ trip_planning_agent = Agent(
 
     **Step 3 — Excluded Fields** (NEVER add to feedback under any circumstances):
         * `themes`
-        * `pois`
         * `endDate`
         * `month`
         * `experienceTypes`
@@ -241,15 +243,20 @@ trip_planning_agent = Agent(
 
     **Canonical question map — use exactly these questions, word for word:**
 
-    | feedback[0]      | summary question to use                                                                                      |
-    |------------------|--------------------------------------------------------------------------------------------------------------|
-    | cityPreference   | "Which cities in [DESTINATION] are you thinking? Or I can choose the best ones for you."                    |
-    | startDate        | "What dates are you planning to travel?"                                                                     |
-    | numDays          | "How many days are you planning to stay?"                                                                    |
-    | destinations     | "Where would you like to go?"                                                                                |
-    | pax              | "How many travellers will be joining?"                                                                       |
-    | travelStyle      | "What travel style suits you best?"                                                                          |
-    | activities       | "What kind of activities are you interested in?"                                                             |
+    | feedback[0]      | summary question to use                                                                                                      |
+    |------------------|------------------------------------------------------------------------------------------------------------------------------|
+    | pois             | "Are there specific places you'd like to visit in [DESTINATION]? Or I can pick the top ones for you — just say the word."   |
+    | cityPreference   | "Which cities in [DESTINATION] are you thinking? Or I can choose the best ones for you."                                    |
+    | startDate        | "What dates are you planning to travel?"                                                                                     |
+    | numDays          | "How many days are you planning to stay?"                                                                                    |
+    | destinations     | "Where would you like to go?"                                                                                                |
+    | pax              | "How many travellers will be joining?"                                                                                       |
+    | travelStyle      | "What travel style suits you best?"                                                                                          |
+    | activities       | "What kind of activities are you interested in?"                                                                             |
+
+    **`pois` special case:**
+    Replace `[DESTINATION]` with the actual destination name from `destinations[0]`.
+    Example: destinations = ["Bali"] → "Are there specific places you'd like to visit in Bali? Or I can pick the top ones for you — just say the word."
 
     **`cityPreference` special case:**
     Replace `[DESTINATION]` in the question with the actual country/region name from `destinations[0]`.
@@ -334,9 +341,27 @@ trip_planning_agent = Agent(
     📍 POIs RULE
     =====================================================================
 
-    * Extract explicit POIs (landmarks, attractions, mountains, named buildings) from the user's statements.
+    POIs are MANDATORY for trip planning. There are two valid states:
+
+    **State A — User provides POIs:**
+    * Extract explicitly mentioned landmarks, attractions, mountains, named buildings, or venues from the user's statements.
     * Examples: "Eiffel Tower", "Mount Fuji", "The Louvre", "Great Wall of China".
-    * If none mentioned, return `[]`.
+    * Populate the `pois` list with what the user mentioned → `pois` is resolved, do NOT add to feedback.
+
+    **State B — User explicitly delegates to the agent:**
+    * ONLY if the user says something like "you choose", "surprise me", "pick for me", "whatever you think is best", "best ones", "you decide" → auto-populate `pois` with the top 3–5 iconic, must-visit locations for that destination.
+    * Examples: destination = "Bali" → pois: ["Tanah Lot Temple", "Ubud Monkey Forest", "Tegallalang Rice Terraces", "Seminyak Beach"]
+    * Examples: destination = "Paris" → pois: ["Eiffel Tower", "The Louvre", "Notre-Dame Cathedral", "Montmartre"]
+    * In this case `pois` is populated → do NOT add to feedback.
+
+    **State C — User has not addressed POIs at all:**
+    * If the user simply hasn't mentioned any POIs and has NOT explicitly delegated → add `pois` to feedback. The agent must ask the question first.
+    * Return `pois: []` and add `"pois"` to feedback.
+
+    **State D — No destination yet:**
+    * If `destinations` is empty, `pois` cannot be resolved → add `pois` to feedback.
+
+    **Rule:** Never silently auto-populate POIs. Only auto-populate when the user explicitly says so.
 
     =====================================================================
     👥 PAX RULE
@@ -644,41 +669,36 @@ If NOT travel-related → isValid = false, reason = OFF_TOPIC.
 
 Only reached if the query IS travel-related.
 
-**isTravelRelated = true** — ONLY in these two cases:
-1. The user's CURRENT message explicitly asks to plan a trip or create an itinerary:
-   - "Plan a 7-day trip to Morocco" ✅
-   - "We're traveling to Paris in June, plan it for us" ✅
-   - "Create an itinerary for my Japan trip" ✅
-   - "I'm heading to Bali for 5 days, plan something" ✅
-2. The AI previously asked a planning question (e.g., "Want me to build a trip itinerary?", "How many days will your trip be?") AND the user responds affirmatively in their CURRENT message (e.g., "yes", "sure", "please", "let's do it", "go ahead").
+Ask yourself one question: **What does the user actually want to happen right now?**
 
-Trigger phrases for case 1: "Plan a trip to", "Create an itinerary for", "We're visiting", "We will be in", "Help me plan", "We're spending X days in", "build me an itinerary"
+**isTravelRelated = true** — The user's underlying intent is to have a trip itinerary built for them RIGHT NOW. Both conditions must be true:
+- They have mentally committed to a specific destination (even if loosely stated)
+- Their core intent is "build/generate the plan", not "help me decide" or "give me ideas"
 
-**⚠️ CRITICAL RULE — Recommendations are NEVER trip planning:**
-Any request for recommendations (restaurants, hotels, activities, things to do, places to visit, attractions) is ALWAYS `isTravelRelated = false`, even if:
-- The conversation history mentions a destination
-- The AI previously asked trip planning questions
-- The user is clearly going to that destination
+Examples where intent = build the plan:
+- "Plan a 7-day trip to Morocco" ✅ — destination fixed, wants the plan generated
+- "We're going to Paris in June, build us an itinerary" ✅ — destination fixed, wants output
+- "I'm heading to Bali for 5 days, what should we do each day?" ✅ — destination fixed, asking for a structured plan
+- The AI asked "Want me to build a trip itinerary?" and the user replied "yes / sure / go ahead / please" ✅ — explicitly accepting the offer
 
-Examples that are ALWAYS false:
-- "Can you suggest some desi restaurants?" (asking for recommendations) ❌
-- "What are the best hotels in Paris?" (asking for recommendations) ❌
-- "I want to find restaurants in Rome" (looking for places, not planning) ❌
-- "Suggest some activities in Bali" (recommendation request) ❌
+**isTravelRelated = false** — The user's underlying intent is to explore, discover, get advice, or be inspired. They are NOT ready for a plan to be generated yet. This includes:
+- Asking for destination suggestions ("where should we go?", "what's a good place for...?")
+- Seeking advice or opinions ("is September good for Europe?", "what would you recommend?")
+- Researching a topic ("what's the food scene like in Tokyo?", "how safe is Colombia?")
+- Asking about experiences, places, activities, hotels, or restaurants
+- Using words like "plan" or "help me plan" but still asking WHERE or WHAT — the word "plan" does not determine intent; the stage of the decision does
 
-**isTravelRelated = false** — Everything that is travel-related but NOT explicit planning + affirmative intent:
-- "Best beaches in Thailand?" (general question)
-- "Is October good for visiting India?" (research)
-- "Top restaurants in Rome?" (recommendation)
-- "What currency does Colombia use?" (informational)
-- "Give me 5 places to visit in Karachi" (list request)
-- Any restaurant/hotel/activity suggestion request, regardless of context
+Examples where intent = still deciding / exploring:
+- "Help me plan a romantic getaway for my wife and I in September, where should we go?" ❌ — asking for destination advice, not requesting a plan
+- "Help me plan a honeymoon, what are the best destinations?" ❌ — discovery phase, no destination committed
+- "We want to travel this summer, any suggestions?" ❌ — open-ended advice request
+- "What are fun things to do in Las Vegas?" ❌ — information request
+- "Best beaches in Thailand?" ❌ — research
+- "Top restaurants in Rome?" ❌ — recommendation request
+- "Is October a good time to visit India?" ❌ — advice seeking
+- "Give me 5 places to visit in Karachi" ❌ — list/inspiration request
 
-**Quick test (apply in order):**
-1. Is the user asking for recommendations (restaurants, hotels, activities)? → ALWAYS false
-2. Did the user explicitly ask to PLAN or CREATE an ITINERARY in this message? → true
-3. Did the AI ask a planning question AND the user just said yes/sure/please? → true
-4. Everything else → false
+**The core rule:** Does the user have a destination AND want a plan generated right now? → true. Is the user still figuring things out, asking for ideas, or seeking advice? → false. Ignore the words used — read the intent.
 
 ---
 
