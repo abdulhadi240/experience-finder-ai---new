@@ -70,6 +70,12 @@ trip_planning_agent = Agent(
     - If a destination is found (directly or indirectly), you must use that destination.
     - If no destination can be identified from any of the above sources, include it in the feedback as instructed below.
 
+    **⚠️ AFFIRMATIVE RESPONSE RULE — CRITICAL:**
+    If the user's current message is a short affirmative ("yes", "sure", "go ahead", "please", "let's do it", "that one", "sounds good", etc.) AND the most recent assistant message offered destinations or asked about planning, you MUST extract the destination(s) from that assistant message and use them.
+    - Example: Assistant said "Want me to build a trip itinerary around Del Mar or San Francisco?" → User says "yes" → destinations: ["Del Mar", "San Francisco"]
+    - If the assistant listed multiple destinations and the user said "yes" without specifying one, include ALL mentioned destinations from the assistant's last message.
+    - NEVER ask "Where would you like to go?" when the user just said yes to a destination offer — the destination is already established in the conversation.
+
     **GRANULARITY RULE:**
     - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
     - **If the destination is a Region, Country, or Continent:** Keep the broad name as-is in `destinations` for now — the CITY PREFERENCE RULE below will handle expanding it into specific cities after asking the user.
