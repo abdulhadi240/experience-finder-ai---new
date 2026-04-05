@@ -138,17 +138,17 @@ trip_planning_agent = Agent(
     `startDate` MUST appear as the VERY FIRST item in `feedback` whenever ALL of the following are true:
     1. `startDate` is null
     2. The user has NOT refused/deferred dates (no negative constraint phrase)
-    3. `numDays` is also null
 
-    **Nothing overrides this rule except a negative constraint or a non-null `numDays`.**
+    **Nothing overrides this rule except a negative constraint.**
 
     The following do NOT suppress `startDate` from feedback:
+    - ❌ `numDays` being set — a trip length is NOT a start date
     - ❌ `month` being set (e.g. "July", "September") — a month name is NOT a start date
     - ❌ `destinations` being known
     - ❌ Any other field being set or null
     - ❌ Any assumption or inference about the user's intent
 
-    If you find yourself about to output a feedback list that starts with `numDays` while `startDate` is null and no negative constraint applies — STOP and put `startDate` first.
+    If you find yourself about to output a feedback list that does NOT start with `startDate` while `startDate` is null and no negative constraint applies — STOP and put `startDate` first.
 
     =====================================================================
     🛑 NEGATIVE CONSTRAINTS — DATE REFUSAL DETECTION
@@ -197,8 +197,8 @@ trip_planning_agent = Agent(
     If `numDays` is null and not calculable → it ALWAYS goes in feedback.
 
     **ORDERING RULE (only applies when both are in feedback):**
-    If `startDate` is in feedback AND `numDays` is in feedback → `startDate` comes first.
-    If `startDate` is excluded (negative constraint) AND `numDays` is null → `numDays` goes in feedback as the first item.
+    If `startDate` is in feedback AND `numDays` is in feedback → `startDate` always comes first.
+    If `startDate` is excluded (negative constraint only) AND `numDays` is null → `numDays` goes in feedback as the first item.
 
     =====================================================================
     🧩 FEEDBACK GENERATION RULES
@@ -232,15 +232,16 @@ trip_planning_agent = Agent(
         **ORDERING RULE (strict):**
         1. `startDate` — always first (unless suppressed)
         2. `numDays` — immediately after `startDate` when both present
-        3. `pois` — after date fields
-        4. `destinations` — if still unknown
-        5. `pax`
-        6. `travelStyle`
-        7. `activities`
+        3. `destinations` — if still unknown
+        4. `pax`
+        5. `travelStyle`
+        6. `activities`
+        7. `pois` — always last
 
         - `cityPreference` overrides position 1 only when the CITY PREFERENCE RULE applies (country-level destination, no city named yet).
-        - If `startDate` is excluded by negative constraint but `numDays` is null → `numDays` moves to position 1.
+        - If `startDate` is excluded by negative constraint (and only a negative constraint) but `numDays` is null → `numDays` moves to position 1.
         - `numDays` inclusion NEVER depends on whether `startDate` is in feedback.
+        - `numDays` being set does NOT remove `startDate` from feedback.
 
         **DO NOT** add `experienceTypes` to feedback.
 
@@ -249,8 +250,7 @@ trip_planning_agent = Agent(
         * If `startDate` is `null`:
             * **First, check NEGATIVE CONSTRAINTS above.**
             * If the user expressed ANY refusal/deferral/uncertainty about dates → **DO NOT** add to feedback. This takes absolute priority.
-            * **If `numDays` is not null** (user provided a number of days) → **DO NOT** add `startDate` to feedback. The user has expressed their trip duration without committing to dates — do not pressure them for a start date.
-            * Only if NONE of the above conditions triggered → **ADD** `startDate` to feedback.
+            * Only if the negative constraint was NOT triggered → **ADD** `startDate` to feedback as the FIRST item. `numDays` being set does NOT suppress this — we still need the actual travel date.
 
         * ⚠️ **`month` is NOT a substitute for `startDate`:** If `month` is set (e.g. "September") but `startDate` is null, this does NOT exclude `startDate` from feedback. A month name is not a travel date. `startDate` must still be asked unless a negative constraint or numDays rule applies.
 
@@ -387,7 +387,7 @@ trip_planning_agent = Agent(
     * In this case `pois` is populated → do NOT add to feedback.
 
     **State C — User has not addressed POIs at all:**
-    * If the user simply hasn't mentioned any POIs and has NOT explicitly delegated → add `pois` to feedback. The agent must ask the question first.
+    * If the user simply hasn't mentioned any POIs and has NOT explicitly delegated → add `pois` to feedback. The agent must ask the question (always last in feedback order).
     * Return `pois: []` and add `"pois"` to feedback.
 
     **State D — No destination yet:**
@@ -424,8 +424,8 @@ trip_planning_agent = Agent(
     *Input:* "I want to plan a trip to San Francisco for 4 days, Selected Travelers - 2 adults, 2 children, Selected Start Date - don't have my dates yet."
     *Analysis:*
       - "don't have my dates yet" → negative constraint triggered → EXCLUDE startDate from feedback
-      - numDays = 4 (exact) → also independently excludes startDate (numDays is not null rule)
-      - Both rules agree: startDate NOT in feedback
+      - numDays = 4 (exact)
+      - startDate excluded ONLY because of the negative constraint (not because numDays is set)
     *Output:*
     {{
       "startDate": null,
@@ -439,15 +439,16 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["travelStyle", "activities"],
+      "feedback": ["travelStyle", "activities", "pois"],
       "summary": "What travel style suits you best?"
     }}
 
-    **Example 1a: numDays provided, no date refusal — startDate still excluded**
+    **Example 1a: numDays provided, no date refusal — startDate STILL required**
     *Input:* "I want to go to London for 5 days, 2 adults 1 child, luxury style, water sports."
     *Analysis:*
       - No date refusal phrase → negative constraint NOT triggered
-      - numDays = 5 (explicit) → numDays is not null → EXCLUDE startDate from feedback
+      - numDays = 5 (explicit) → does NOT suppress startDate
+      - startDate is null and no negative constraint → startDate MUST be first in feedback
       - travelStyle and activities are provided → NOT in feedback
     *Output:*
     {{
@@ -462,8 +463,8 @@ trip_planning_agent = Agent(
       "activities": ["Water Sports"],
       "themes": null,
       "pois": [],
-      "feedback": [],
-      "summary": "Your trip to London is all set!"
+      "feedback": ["startDate", "pois"],
+      "summary": "What dates are you planning to travel?"
     }}
 
     **Example 1b: User refuses date AND numDays not provided**
@@ -486,7 +487,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["numDays", "travelStyle", "activities"],
+      "feedback": ["numDays", "travelStyle", "activities", "pois"],
       "summary": "No problem! How long are you thinking of traveling for?"
     }}
 
@@ -511,7 +512,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities", "pois"],
       "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. What dates are you planning to travel?"
     }}
 
@@ -534,7 +535,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities", "pois"],
       "summary": "What dates are you planning to travel?"
     }}
 
@@ -561,8 +562,8 @@ trip_planning_agent = Agent(
       "activities": ["Nature", "Art Museum", "Cultural"],
       "themes": null,
       "pois": [],
-      "feedback": [],
-      "summary": "Your trip is all set — enjoy your adventure in China!"
+      "feedback": ["pois"],
+      "summary": "Are there specific places you'd like to visit in China? Or I can pick the top ones for you — just say the word."
     }}
 
     **Example 4: User uses vague language only, no explicit number**
@@ -583,7 +584,7 @@ trip_planning_agent = Agent(
       "activities": null,
       "themes": null,
       "pois": [],
-      "feedback": ["startDate", "numDays", "travelStyle", "activities"],
+      "feedback": ["startDate", "numDays", "travelStyle", "activities", "pois"],
       "summary": "What dates are you planning to travel?"
     }}
 
