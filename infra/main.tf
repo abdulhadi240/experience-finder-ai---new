@@ -493,12 +493,12 @@ resource "aws_ecs_task_definition" "task" {
         { name = "REDIS_HOST", value = aws_elasticache_replication_group.redis.primary_endpoint_address },
 		{ name = "REDIS_PORT", value = "6379" },
 		{ name = "REDIS_USE_TLS", value = "true" },
-		{ name = "REDIS_ENABLED", value = "false" },
+		{ name = "REDIS_ENABLED", value = "true" },
 
 		# Your app knobs:
 		{ name = "REDIS_TTL_SECONDS", value = "3600" },
 		{ name = "REDIS_IDLE_CUTOFF_SECONDS", value = "1200" },
-		{ name = "REDIS_OLD_INTERACTIONS_LIMIT", value = "3" },
+		{ name = "REDIS_OLD_INTERACTIONS_LIMIT", value = "5" },
 		{ name = "REDIS_OLD_INTERACTIONS_MAX", value = "30" },
       ],
       secrets = [

@@ -605,43 +605,30 @@ def clean_answer(answer: str) -> str:
 
 
 def build_conversation_context(request: QueryRequest, history: list[dict] | None = None) -> str:
-    """Build the full message string from Redis history (newest-last order from fetch)."""
+    """Build the full message string from Redis history (oldest→newest order)."""
     if not history:
         return request.message
 
-    # history is oldest→newest; take last 3, then build oldest→newest context
-    recent = history[-3:]
-
-    if len(recent) >= 3:
-        old, previous, last = recent[0], recent[1], recent[2]
-        return (
-            f"Previous conversations:\n"
-            f"User: {old['question']}\nAssistant: {clean_answer(old['answer'])}\n\n"
-            f"User: {previous['question']}\nAssistant: {clean_answer(previous['answer'])}\n\n"
-            f"Last conversation:\n"
-            f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
-            f" (this is the continuation of the conversation)\n\n"
-            f"User asked: {request.message}"
-        )
-    elif len(recent) == 2:
-        previous, last = recent[0], recent[1]
-        return (
-            f"Previous conversation:\n"
-            f"User: {previous['question']}\nAssistant: {clean_answer(previous['answer'])}\n\n"
-            f"Last conversation:\n"
-            f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
-            f" (this is the continuation of the conversation)\n\n"
-            f"User asked: {request.message}"
-        )
-    elif len(recent) == 1:
-        last = recent[0]
+    if len(history) == 1:
+        last = history[0]
         return (
             f"Last conversation (this is the continuation of the conversation):\n"
             f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
             f"New question asked: {request.message}"
         )
 
-    return request.message
+    # 2+ interactions: all but last are "previous", last is most recent
+    lines = ["Previous conversations:"]
+    for item in history[:-1]:
+        lines.append(f"User: {item['question']}\nAssistant: {clean_answer(item['answer'])}")
+    last = history[-1]
+    lines.append(
+        f"\nLast conversation:\n"
+        f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
+        f" (this is the continuation of the conversation)\n\n"
+        f"User asked: {request.message}"
+    )
+    return "\n\n".join(lines)
 
 
 # ─── Memory Engage Stream ─────────────────────────────────────────

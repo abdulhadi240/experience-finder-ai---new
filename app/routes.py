@@ -14,7 +14,7 @@ router = APIRouter()
 
 _REDIS_TTL          = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
 _REDIS_IDLE_CUTOFF  = int(os.getenv("REDIS_IDLE_CUTOFF_SECONDS", "1200"))
-_REDIS_CTX_LIMIT    = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "3"))
+_REDIS_CTX_LIMIT    = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "5"))
 
 
 # ─── Main Chat Route ──────────────────────────────────────────────
