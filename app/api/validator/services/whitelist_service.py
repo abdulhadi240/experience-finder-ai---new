@@ -148,7 +148,6 @@ def _extract_country_from_query(query: str, openai_key: str) -> Optional[str]:
             return country.strip().lower()
         return None
     except Exception as e:
-        print(f"  ⚠️  Country extraction failed: {e}")
         return None
 
 
@@ -276,10 +275,8 @@ def _call_openai(category: str, country: str, api_key: str) -> Dict[str, Any]:
         resp.raise_for_status()
         text = resp.json()["choices"][0]["message"]["content"]
         domains = _parse_domain_list(text)
-        print(f"  🤖 OpenAI whitelist [{category}/{country}]: {domains}")
         return {"llm": "openai", "success": True, "domains": domains}
     except Exception as e:
-        print(f"  ⚠️  OpenAI whitelist call failed: {e}")
         return {"llm": "openai", "success": False, "domains": []}
 
 
@@ -308,10 +305,8 @@ def _call_perplexity(category: str, country: str, api_key: str) -> Dict[str, Any
         resp.raise_for_status()
         text = resp.json()["choices"][0]["message"]["content"]
         domains = _parse_domain_list(text)
-        print(f"  🔍 Perplexity whitelist [{category}/{country}]: {domains}")
         return {"llm": "perplexity", "success": True, "domains": domains}
     except Exception as e:
-        print(f"  ⚠️  Perplexity whitelist call failed: {e}")
         return {"llm": "perplexity", "success": False, "domains": []}
 
 
@@ -342,10 +337,8 @@ def _call_gemini(category: str, country: str, api_key: str) -> Dict[str, Any]:
         parts = resp.json()["candidates"][0]["content"]["parts"]
         text = " ".join(p.get("text", "") for p in parts)
         domains = _parse_domain_list(text)
-        print(f"  💎 Gemini whitelist [{category}/{country}]: {domains}")
         return {"llm": "gemini", "success": True, "domains": domains}
     except Exception as e:
-        print(f"  ⚠️  Gemini whitelist call failed: {e}")
         return {"llm": "gemini", "success": False, "domains": []}
 
 
@@ -398,12 +391,9 @@ def _verify_domain_has_content(
         if match:
             result = match.group(1).lower() == "true"
             status = "✅" if result else "❌"
-            print(f"    {status} Web verify [{domain}] for {category}/{country}: {result}")
             return result
-        print(f"    ⚠️  Could not parse verify response for {domain} — defaulting False")
         return False
     except Exception as e:
-        print(f"    ⚠️  Web verify failed for {domain}: {e}")
         return False
 
 
@@ -427,7 +417,6 @@ def _fetch_whitelist_sync(
         )
         return [row["source"] for row in (response.data or [])]
     except Exception as e:
-        print(f"  ⚠️  Whitelist fetch failed: {e}")
         return []
 
 
@@ -469,16 +458,10 @@ class WhitelistDomainFinder:
         successful = [r for r in results if r["success"] and r["domains"]]
 
         if len(successful) < 2:
-            print(f"  ⚠️  Fewer than 2 LLMs succeeded — no consensus possible")
             return set()
 
         domain_sets: List[Set[str]] = [set(r["domains"]) for r in successful]
         consensus: Set[str] = domain_sets[0].intersection(*domain_sets[1:])
-
-        print(f"\n  📊 Consensus ({len(successful)}/3 LLMs):")
-        for r in successful:
-            print(f"       {r['llm']:12s} → {r['domains']}")
-        print(f"     ✅ Agreed (in ALL): {sorted(consensus)}")
 
         return consensus
 
@@ -489,7 +472,6 @@ class WhitelistDomainFinder:
         Run OpenAI web-search verification for each domain in parallel.
         Returns {domain: True/False}.
         """
-        print(f"\n  🌐 Web-verifying {len(domains)} domain(s)...")
         results: Dict[str, bool] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(domains) or 1) as pool:
             futures = {
@@ -502,9 +484,6 @@ class WhitelistDomainFinder:
                 results[domain] = fut.result()
         confirmed = [d for d, ok in results.items() if ok]
         rejected  = [d for d, ok in results.items() if not ok]
-        print(f"  ✅ Confirmed: {sorted(confirmed)}")
-        if rejected:
-            print(f"  ❌ Rejected (no real content): {sorted(rejected)}")
         return results
 
     def find_and_store(self, query: str) -> Dict[str, Any]:
@@ -518,26 +497,14 @@ class WhitelistDomainFinder:
         country  = _extract_country_from_query(query, self.openai_key)
 
         if not country:
-            print(f"⚠️  Whitelist: could not extract country from '{query}' — skipping")
             return {"skipped": True, "reason": "no_country", "query": query}
 
-        print(f"\n{'─'*60}")
-        print(f"🔐 WHITELIST DOMAIN FINDER")
-        print(f"   Query   : {query}")
-        print(f"   Category: {category}")
-        print(f"   Country : {country}")
-        print(f"{'─'*60}")
 
         # ── Cap check upfront ─────────────────────────────────────────────────
         existing = _fetch_whitelist_sync(self._supabase, category, country)
         slots_available = MAX_WHITELIST_PER_CATEGORY - len(existing)
 
-        print(f"  📦 Existing: {len(existing)}/{MAX_WHITELIST_PER_CATEGORY} — "
-              f"slots available: {slots_available}")
-
         if slots_available <= 0:
-            print(f"  🔒 Cap reached ({MAX_WHITELIST_PER_CATEGORY}) for "
-                  f"[{category}/{country}] — nothing to do")
             return {
                 "category": category,
                 "country": country,
@@ -551,11 +518,9 @@ class WhitelistDomainFinder:
         confirmed_domains: Set[str] = set()
 
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-            print(f"\n  🔄 Attempt {attempt}/{MAX_RETRY_ATTEMPTS}")
 
             consensus = self._run_llm_consensus(category, country)
             if not consensus:
-                print(f"  ⚠️  No consensus on attempt {attempt} — retrying")
                 continue
 
             all_verified_ever.update(consensus)
@@ -563,7 +528,6 @@ class WhitelistDomainFinder:
             # Only web-verify domains not already confirmed or known bad
             new_candidates = consensus - confirmed_domains - set(existing)
             if not new_candidates:
-                print(f"  ℹ️  All consensus domains already processed — retrying for new ones")
                 continue
 
             verify_results = self._web_verify_domains(new_candidates, category, country)
@@ -571,15 +535,11 @@ class WhitelistDomainFinder:
             confirmed_domains.update(newly_confirmed)
 
             if confirmed_domains:
-                print(f"  ✅ Web verification passed — proceeding to store")
                 break
 
-            print(f"  ❌ No domains passed web verification on attempt {attempt}"
-                  + (f" — retrying..." if attempt < MAX_RETRY_ATTEMPTS else " — giving up"))
 
         # ── Store confirmed domains up to available slots ─────────────────────
         if not confirmed_domains:
-            print(f"  ℹ️  No web-confirmed domains after {MAX_RETRY_ATTEMPTS} attempts — nothing stored")
             return {
                 "category": category,
                 "country": country,
@@ -591,9 +551,6 @@ class WhitelistDomainFinder:
         new_domains = sorted(confirmed_domains - set(existing))[:slots_available]
         stored = self._upsert_domains(category, country, set(new_domains))
 
-        print(f"  💾 Stored {stored}/{len(new_domains)} web-confirmed domains "
-              f"(cap: {MAX_WHITELIST_PER_CATEGORY})")
-        print(f"{'─'*60}\n")
 
         return {
             "category": category,
@@ -632,9 +589,8 @@ class WhitelistDomainFinder:
                 )
                 if response.data:
                     inserted += 1
-                    print(f"    ✅ Upserted: {domain}")
-            except Exception as e:
-                print(f"    ⚠️  Failed to upsert '{domain}': {e}")
+            except Exception:
+                pass
 
         return inserted
 
@@ -673,7 +629,6 @@ async def run_whitelist_discovery(query: str) -> Dict[str, Any]:
         finder = _get_finder()
         return await asyncio.to_thread(finder.find_and_store, query)
     except Exception as e:
-        print(f"⚠️  run_whitelist_discovery failed: {e}")
         return {"skipped": True, "reason": str(e)}
 
 
@@ -686,5 +641,4 @@ def fetch_whitelist_domains(category: str, country: str) -> List[str]:
         finder = _get_finder()
         return finder.get_whitelist_for(category, country)
     except Exception as e:
-        print(f"⚠️  fetch_whitelist_domains failed: {e}")
         return []

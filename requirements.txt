@@ -24,4 +24,5 @@ google-genai
 opik
 streamlit
 websockets   # compatible with google-genai
+redis        # conversation context cache (ElastiCache on AWS, disabled on Render)
 packaging    # compatible with streamlit

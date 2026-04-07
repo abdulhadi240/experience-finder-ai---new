@@ -89,8 +89,8 @@ async def generate_loading_statements(message: str, param: str) -> list:
         stmts    = data.get("messages", [])
         if isinstance(stmts, list) and len(stmts) >= 3:
             return [str(s) for s in stmts[:6]]
-    except Exception as e:
-        print(f"generate_loading_statements failed: {e}")
+    except Exception:
+        pass
 
     return []
 
@@ -261,8 +261,8 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
             delta = chunk.choices[0].delta.content
             if delta:
                 await queue.put(delta)
-    except Exception as e:
-        print(f"stream_starter_to_queue failed: {e}")
+    except Exception:
+        pass
     finally:
         await queue.put(None)  # sentinel — always fired
 

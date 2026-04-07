@@ -31,7 +31,6 @@ def check_user(user_id: str):
         return thread_id
 
     except Exception as e:
-        print(f"Error in check_user: {e}")
         return None
 
 
@@ -47,7 +46,7 @@ def setup_user_session(user_id: str, thread_id: str) -> None:
             client.user.add(user_id=user_id)
         client.thread.create(thread_id=thread_id, user_id=user_id)
     except Exception as e:
-        print(f"setup_user_session error: {e}")
+        pass
 
     
 
@@ -59,20 +58,6 @@ def add_message(message: str, thread_id: str, role: str):
         )
     ]
     client.thread.add_messages(thread_id, messages=messages)
-    print(f"\n[ZEP SAVE] role={role} | thread={thread_id}")
-    print(f"[ZEP SAVE] content={message[:120]}")
-
-    # Verify by reading back the last 2 messages from the thread
-    try:
-        verify = client.thread.get(thread_id, lastn=2)
-        saved = getattr(verify, 'messages', []) or []
-        print(f"[ZEP VERIFY] Messages in thread: {len(saved)}")
-        for m in saved:
-            r = getattr(m, 'role', '?')
-            c = str(getattr(m, 'content', ''))[:80]
-            print(f"  [{r}] {c}")
-    except Exception as e:
-        print(f"[ZEP VERIFY] Error: {e}")
     
     
     
@@ -98,8 +83,7 @@ def get_user_memory_for_engage(user_id: str) -> str:
             summary = getattr(node_response.node, 'summary', None)
         if summary:
             parts.append(summary)
-    except Exception as e:
-        print(f"[ZEP ENGAGE] Error fetching node summary: {e}")
+    except Exception:
         return None
 
     # 2. Last user message from most recent thread
@@ -116,8 +100,6 @@ def get_user_memory_for_engage(user_id: str) -> str:
             )
             last_thread = threads_sorted[0]
             thread_id = getattr(last_thread, 'thread_id', None) or getattr(last_thread, 'id', None)
-            print(f"[ZEP ENGAGE] Most recent thread ID: {thread_id}")
-
             if thread_id:
                 msg_response = client.thread.get(thread_id, lastn=2)
                 messages = getattr(msg_response, 'messages', None) or []
@@ -127,12 +109,10 @@ def get_user_memory_for_engage(user_id: str) -> str:
                     if str(role).lower() == 'user':
                         last_user_msg = getattr(msg, 'content', None)
                         if last_user_msg:
-                            print(f"[ZEP ENGAGE] Last user message: {last_user_msg}")
-                            # Insert at front so nano sees it first
                             parts.insert(0, f"[LAST_TOPIC] {last_user_msg}")
                         break
-    except Exception as e:
-        print(f"[ZEP ENGAGE] Error fetching last message: {e}")
+    except Exception:
+        pass
 
     return "\n\n".join(parts) if parts else None
 
@@ -147,11 +127,9 @@ def get_user_preferences(user_id: str) -> str | None:
         if node_response and hasattr(node_response, 'node') and node_response.node:
             summary = getattr(node_response.node, 'summary', None)
             if summary:
-                print(f"[ZEP PREFS] Got node summary for user {user_id}: {summary[:120]}")
                 return summary
         return None
-    except Exception as e:
-        print(f"[ZEP PREFS] Error fetching preferences for user {user_id}: {e}")
+    except Exception:
         return None
 
 

@@ -22,6 +22,14 @@ from .services import (
 from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
 from .region_metadata import REGION_METADATA
+from . import redis_history as _redis_history
+import os
+import logging
+
+_log = logging.getLogger("app.agent")
+
+_REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
+_REDIS_MAX      = int(os.getenv("REDIS_OLD_INTERACTIONS_MAX", "30"))
 
 
 # ─── Real-time query detector ─────────────────────────────────────
@@ -136,7 +144,7 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
             headers=headers,
         )
         response.raise_for_status()
-        print("RAG Response:", response.json())
+        pass
         try:
             return response.json()
         except json.JSONDecodeError:
@@ -152,9 +160,9 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
 
 # ─── Explore Context Extractor ───────────────────────────────────
 
-def _extract_explore_context(old_interactions) -> tuple[str, list[str]]:
+def _extract_explore_context(history: list[dict] | None) -> tuple[str, list[str]]:
     """
-    Parses the most recent explore response.
+    Parses the most recent explore response from Redis history.
 
     Returns:
       - context_str : a [PREVIOUS_EXPLORE_CONTEXT] block for the trip planner (activity hint)
@@ -163,28 +171,27 @@ def _extract_explore_context(old_interactions) -> tuple[str, list[str]]:
                       we do NOT rely on the LLM to populate pois from context, because
                       the UNIVERSAL RULE blocks extraction from assistant-side text.
     """
-    if not old_interactions:
+    if not history:
         return "", []
 
-    last = old_interactions[0]
-
-    print(f"[EXPLORE_CONTEXT] last.question={last.question!r}")
-    print(f"[EXPLORE_CONTEXT] last.answer[:300]={last.answer[:300]!r}")
+    # history is oldest→newest; most recent is last
+    last = history[-1]
 
     # ── Extract place names ───────────────────────────────────────
     # Prefer $$$$$ metadata block (RAG) — "name" values are authoritative
     pois: list[str] = []
-    if "$$$$$" in last.answer:
-        parts = last.answer.split("$$$$$")
+    answer = last.get("answer", "")
+    if "$$$$$" in answer:
+        parts = answer.split("$$$$$")
         if len(parts) >= 2:
             metadata_block = parts[1]
             pois = re.findall(r'"name"\s*:\s*"([^"]+)"', metadata_block)
     if not pois:
         # web_search_agent — no metadata block, extract **Bold Place Names** from text
-        pois = re.findall(r'\*\*([^*]+)\*\*', last.answer)
+        pois = re.findall(r'\*\*([^*]+)\*\*', answer)
 
     # ── Build context string for activity hint only ───────────────
-    original_query = (last.question or "").strip()
+    original_query = (last.get("question") or "").strip()
     if not original_query:
         return "", pois
 
@@ -337,6 +344,8 @@ async def _main_stream(
     thread_id: str,
     param: str,
     final_message: str,
+    conversation_id: Optional[str] = None,
+    history: list[dict] | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
 
@@ -361,19 +370,25 @@ async def _main_stream(
                 await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
                 await asyncio.to_thread(add_message, role='user', thread_id=thread_id, message=request.message)
             except Exception as e:
-                print(f"[Zep] Save failed (non-blocking): {e}")
+                pass
         asyncio.create_task(_save_to_zep())
 
     # ── Fast-path: plan queries skip all middleware ───────────────
     if request.plan:
         try:
-            ctx_str, ctx_pois = _extract_explore_context(request.old_interactions)
-            print(f"[EXPLORE_CONTEXT] fast-path | pois={ctx_pois} | block={ctx_str!r}")
+            ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
             response_content, timing_info = await get_complete_response(enriched, thread_id, param)
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+            # ── Save plan Q&A to Redis (summary is the conversational text) ──
+            if request.user_id and conversation_id and response_content.summary:
+                asyncio.create_task(_redis_history.append_interaction(
+                    request.user_id, conversation_id,
+                    question=request.message, answer=response_content.summary,
+                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
@@ -387,7 +402,6 @@ async def _main_stream(
     # ── Fire remaining tasks in parallel ─────────────────────────
     async def _summarize_then_rag() -> Dict[str, Any]:
         query = await summarize_for_rag(final_message)
-        print(f"📡 RAG QUERY: '{query}'")
         return await rag(query=query, reference=request.reference)
 
     rag_task        = asyncio.create_task(_summarize_then_rag())
@@ -445,14 +459,13 @@ async def _main_stream(
 
     # ── RAG result (scope note check moved to instant gate above) ──
     if isinstance(rag_result, Exception):
-        print(f"RAG failed, falling back: {rag_result}")
+        pass
 
     # ── Validation check ─────────────────────────────────────────
     if isinstance(validation_result, Exception):
         yield f"data: {json.dumps({'error': str(validation_result)})}\n\n"
         return
 
-    print("validation_result:", validation_result.final_output)
 
     if not validation_result.final_output.isValid:
         solution = validation_result.final_output.solution
@@ -490,13 +503,19 @@ async def _main_stream(
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     if validation_result.final_output.isTravelRelated:
         try:
-            ctx_str, ctx_pois = _extract_explore_context(request.old_interactions)
-            print(f"[EXPLORE_CONTEXT] validation-path | pois={ctx_pois} | block={ctx_str!r}")
+            ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
             response_content, timing_info = await get_complete_response(enriched, thread_id, param)
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+            # ── Save plan Q&A to Redis ────────────────────────────
+            if request.user_id and conversation_id and response_content.summary:
+                asyncio.create_task(_redis_history.append_interaction(
+                    request.user_id, conversation_id,
+                    question=request.message, answer=response_content.summary,
+                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
@@ -536,6 +555,11 @@ async def _main_stream(
     else:
         agent_name = "web_search_agent"
 
+    _log.info(
+        "[AGENT INPUT] agent=%s | user=%s\n%s",
+        agent_name, request.user_id, final_message_with_ref,
+    )
+
     token_queue = asyncio.Queue()
     asyncio.create_task(
         stream_agent_to_queue(
@@ -549,17 +573,29 @@ async def _main_stream(
     )
 
     # ── Phase 2: stream main agent tokens ────────────────────────
+    redis_answer_parts: list[str] = []
+    stream_error = False
     while True:
         token = await token_queue.get()
         if token is None:
             break
         if isinstance(token, Exception):
             yield f"data: {json.dumps({'error': str(token)})}\n\n"
+            stream_error = True
             break
         yield f"data: {json.dumps({'content': token})}\n\n"
+        redis_answer_parts.append(token)
 
     yield f"data: {json.dumps({'content': '\"}'})}\n\n"
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"
+
+    # ── Save explore Q&A to Redis (non-blocking, fire-and-forget) ─
+    if request.user_id and conversation_id and redis_answer_parts and not stream_error:
+        asyncio.create_task(_redis_history.append_interaction(
+            request.user_id, conversation_id,
+            question=request.message, answer=''.join(redis_answer_parts),
+            max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+        ))
 
 
 # ─── Conversation Context Helpers ─────────────────────────────────
@@ -568,33 +604,32 @@ def clean_answer(answer: str) -> str:
     return answer.split("$$$$$")[0].strip()
 
 
-def build_conversation_context(request: QueryRequest) -> str:
-    if not request.old_interactions:
+def build_conversation_context(request: QueryRequest, history: list[dict] | None = None) -> str:
+    """Build the full message string from Redis history (newest-last order from fetch)."""
+    if not history:
         return request.message
 
-    recent = request.old_interactions[:3]
+    # history is oldest→newest; take last 3, then build oldest→newest context
+    recent = history[-3:]
 
     if len(recent) >= 3:
-        old      = recent[2]
-        previous = recent[1]
-        last     = recent[0]
+        old, previous, last = recent[0], recent[1], recent[2]
         return (
             f"Previous conversations:\n"
-            f"User: {old.question}\nAssistant: {clean_answer(old.answer)}\n\n"
-            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}\n\n"
+            f"User: {old['question']}\nAssistant: {clean_answer(old['answer'])}\n\n"
+            f"User: {previous['question']}\nAssistant: {clean_answer(previous['answer'])}\n\n"
             f"Last conversation:\n"
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
+            f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
             f" (this is the continuation of the conversation)\n\n"
             f"User asked: {request.message}"
         )
     elif len(recent) == 2:
-        previous = recent[1]
-        last     = recent[0]
+        previous, last = recent[0], recent[1]
         return (
             f"Previous conversation:\n"
-            f"User: {previous.question}\nAssistant: {clean_answer(previous.answer)}\n\n"
+            f"User: {previous['question']}\nAssistant: {clean_answer(previous['answer'])}\n\n"
             f"Last conversation:\n"
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
+            f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
             f" (this is the continuation of the conversation)\n\n"
             f"User asked: {request.message}"
         )
@@ -602,7 +637,7 @@ def build_conversation_context(request: QueryRequest) -> str:
         last = recent[0]
         return (
             f"Last conversation (this is the continuation of the conversation):\n"
-            f"User: {last.question}\nAssistant: {clean_answer(last.answer)}\n\n"
+            f"User: {last['question']}\nAssistant: {clean_answer(last['answer'])}\n\n"
             f"New question asked: {request.message}"
         )
 
@@ -657,7 +692,7 @@ async def generate_engage_stream(context: str) -> AsyncGenerator[str, None]:
                 yield f"data: {json.dumps({'content': json.dumps(token)[1:-1]})}\n\n"
         yield f"data: {json.dumps({'content': '\"}'})}\n\n"
     except Exception as e:
-        print(f"[ENGAGE] Stream error: {e}")
+        pass
         yield f"data: {json.dumps({'content': fallback})}\n\n"
 
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"

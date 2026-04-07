@@ -79,7 +79,6 @@ def convert_research_to_attraction(
     rag_exclusion_text = ""
     
     if rag_context:
-        print("📋 RAG context found - will exclude existing content")
         
         # Extract what's already known from RAG
         existing_entities = rag_context.get("entities", [])
@@ -266,8 +265,5 @@ if __name__ == "__main__":
     try:
         attractions = convert_research_to_attraction(sample_input, api_key)
         
-        # Print results
-        for attraction in attractions:
-            print(json.dumps(attraction.model_dump(), indent=2))
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    except Exception:
+        pass

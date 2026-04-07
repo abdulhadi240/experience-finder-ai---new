@@ -32,13 +32,10 @@ async def get_google_maps_data(location_query: str, api_key: str) -> Optional[Di
             data = response.json()
             if data.get("status") == "OK" and data.get("results"):
                 return data["results"][0]
-            print(f"Google Maps API Error: {data.get('status')} - {data.get('error_message')}")
             return None
     except httpx.HTTPStatusError as e:
-        print(f"HTTP error calling Google Maps API: {e}")
         return None
     except Exception as e:
-        print(f"An error occurred calling Google Maps API: {e}")
         return None
 
 
@@ -76,14 +73,11 @@ async def get_place_photo_url(place_id: str, api_key: str) -> Optional[str]:
                         redirect_resp = await client.get(maps_url, follow_redirects=False)
                         cdn_url = redirect_resp.headers.get("location")
                         if cdn_url:
-                            print(f"📸 Photo CDN URL resolved: {cdn_url[:60]}...")
                             return cdn_url
                         # Fallback: return the maps URL if redirect didn't happen
-                        print(f"📸 No redirect — using maps URL")
                         return maps_url
-            print(f"📸 No photos found for place_id: {place_id} (status: {data.get('status')})")
-    except Exception as e:
-        print(f"📸 Error fetching place photo: {e}")
+    except Exception:
+        pass
     return None
 
 
@@ -119,7 +113,6 @@ async def get_place_details(place_id: str, api_key: str) -> Dict[str, Any]:
                         redirect_resp = await client.get(maps_url, follow_redirects=False)
                         cdn_url = redirect_resp.headers.get("location")
                         result["photo_url"] = cdn_url if cdn_url else maps_url
-                        print(f"📸 Photo resolved for place_id={place_id}")
 
                 # Rating & reviews
                 if place.get("rating") is not None:
@@ -140,11 +133,10 @@ async def get_place_details(place_id: str, api_key: str) -> Dict[str, Any]:
                     if hours_dict:
                         result["hours"] = hours_dict
 
-                print(f"📍 Place details fetched: rating={result['rating']}, reviews={result['num_reviews']}, hours={'yes' if result['hours'] else 'no'}")
             else:
-                print(f"📍 Place Details API error: {data.get('status')}")
-    except Exception as e:
-        print(f"📍 Error fetching place details: {e}")
+                pass
+    except Exception:
+        pass
     return result
 
 
@@ -163,18 +155,13 @@ async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict
     Returns:
         True if upsert was successful, False otherwise
     """
-    print(f"\n{'🔄'*40}")
-    print("🔄 STARTING RAG UPSERT")
-    print(f"{'🔄'*40}\n")
 
     # Determine the ID: use Google Maps place_id or generate UUID
     doc_id = None
     if maps_data and maps_data.get("place_id"):
         doc_id = maps_data["place_id"]
-        print(f"📍 Using Google Maps place_id: {doc_id}")
     else:
         doc_id = str(uuid.uuid4())
-        print(f"🔀 Generated random UUID: {doc_id}")
 
     # Get current timestamp in ISO-8601 format
     updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -226,8 +213,6 @@ async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict
     if meta_obj.get("numReviews") is not None:
         payload["meta_obj"]["numReviews"] = meta_obj["numReviews"]
 
-    print(f"📦 RAG Upsert Payload:")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     # Send to RAG API
     rag_url = "https://rag.hiptraveler.com/upsert"
@@ -242,26 +227,15 @@ async def upsert_to_rag(formatted_data: Dict[str, Any], maps_data: Optional[Dict
             response = await client.post(rag_url, json=payload, headers=headers)
             response.raise_for_status()
 
-            print(f"\n✅ RAG UPSERT SUCCESS")
-            print(f"Status Code: {response.status_code}")
-            print(f"Response: {response.text}")
-            print(f"{'🔄'*40}\n")
             return True
 
     except httpx.HTTPStatusError as e:
-        print(f"\n❌ RAG UPSERT FAILED: HTTP {e.response.status_code}")
-        print(f"Response: {e.response.text}")
-        print(f"{'🔄'*40}\n")
         return False
 
     except httpx.TimeoutException:
-        print(f"\n❌ RAG UPSERT FAILED: Request timed out")
-        print(f"{'🔄'*40}\n")
         return False
 
     except Exception as e:
-        print(f"\n❌ RAG UPSERT FAILED: {str(e)}")
-        print(f"{'🔄'*40}\n")
         return False
 
 
@@ -274,7 +248,6 @@ def has_rag_answer(rag_response: Dict[str, Any]) -> bool:
     RAG has data if any of these arrays are non-empty: entities, chunks, audience, travel_style
     """
     if not rag_response:
-        print("🔍 RAG Response Check: No response received")
         return False
 
     # Check if any of the data arrays have content
@@ -284,13 +257,6 @@ def has_rag_answer(rag_response: Dict[str, Any]) -> bool:
     travel_style = rag_response.get("travel_style", [])
 
     # Debug: Show what we found
-    print("\n" + "="*80)
-    print("🔍 RAG RESPONSE ANALYSIS")
-    print("="*80)
-    print(f"📊 Entities count: {len(entities) if isinstance(entities, list) else 'N/A'}")
-    print(f"📊 Chunks count: {len(chunks) if isinstance(chunks, list) else 'N/A'}")
-    print(f"📊 Audience count: {len(audience) if isinstance(audience, list) else 'N/A'}")
-    print(f"📊 Travel Style count: {len(travel_style) if isinstance(travel_style, list) else 'N/A'}")
 
     # RAG has data if any array is non-empty
     has_data = (
@@ -301,19 +267,16 @@ def has_rag_answer(rag_response: Dict[str, Any]) -> bool:
     )
 
     if has_data:
-        print("\n✅ RAG HAS DATA - Details:")
         if isinstance(entities, list) and len(entities) > 0:
-            print(f"   • Entities ({len(entities)}): {json.dumps(entities, indent=6)}")
+            pass
         if isinstance(chunks, list) and len(chunks) > 0:
-            print(f"   • Chunks ({len(chunks)}): {json.dumps(chunks, indent=6)}")
+            pass
         if isinstance(audience, list) and len(audience) > 0:
-            print(f"   • Audience ({len(audience)}): {json.dumps(audience, indent=6)}")
+            pass
         if isinstance(travel_style, list) and len(travel_style) > 0:
-            print(f"   • Travel Style ({len(travel_style)}): {json.dumps(travel_style, indent=6)}")
+            pass
     else:
-        print("\n❌ RAG HAS NO DATA - All arrays are empty")
-
-    print("="*80 + "\n")
+        pass
 
     return has_data
 
@@ -398,20 +361,17 @@ async def is_duplicate_query(new_query: str, supabase_service: SupabaseService) 
     load_dotenv()
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     if not openai_api_key:
-        print("⚠️  OPENAI_API_KEY not set — skipping duplicate check")
         return False
 
     # 1. Fetch all non-expired saved queries
     saved_rows = await supabase_service.get_all_saved_queries()
     if not saved_rows:
-        print("ℹ️  No saved queries in DB — no duplicates possible")
         return False
 
     existing_queries = [row["query_text"] for row in saved_rows if row.get("query_text")]
     if not existing_queries:
         return False
 
-    print(f"\n🔎 Checking new query against {len(existing_queries)} saved queries...")
 
     # 2. Ask OpenAI 4o for similarity
     prompt = (
@@ -447,14 +407,9 @@ async def is_duplicate_query(new_query: str, supabase_service: SupabaseService) 
             result = json.loads(content)
             is_dup = result.get("result", "no").strip().lower() == "yes"
 
-            if is_dup:
-                print(f"🔁 DUPLICATE DETECTED — query already exists: '{new_query}'")
-            else:
-                print(f"✅ No duplicate found for: '{new_query}'")
             return is_dup
 
     except Exception as e:
-        print(f"⚠️  Duplicate check failed ({type(e).__name__}: {e}) — proceeding as non-duplicate")
         return False
 
 
@@ -477,7 +432,6 @@ async def process_query_research(
     # ============================================
     # STEP 1+2: RAG check and web research in parallel
     # ============================================
-    print(f"\n⚡ Firing RAG check + web research in parallel for: '{query}'")
     t0 = time.time()
 
     rag_raw, result = await asyncio.gather(
@@ -485,23 +439,17 @@ async def process_query_research(
         asyncio.to_thread(validate_research, query),
         return_exceptions=True,
     )
-    print(f"⏱  RAG + research: {time.time() - t0:.1f}s")
 
     # ── Process RAG result ────────────────────────────────────────
     rag_response = None
-    if isinstance(rag_raw, Exception):
-        print(f"⚠️ RAG check failed (continuing): {rag_raw}")
-    else:
-        print(json.dumps(rag_raw, indent=2, ensure_ascii=False))
+    if not isinstance(rag_raw, Exception):
         if has_rag_answer(rag_raw):
             rag_response = rag_raw
-            print("✅ RAG has data — will pass as exclusion context")
         else:
-            print("❌ RAG has no data — full research will be used")
+            pass
 
     # ── Process validate_research result ─────────────────────────
     if isinstance(result, Exception):
-        print(f"❌ validate_research failed: {result}")
         return None
 
     # ============================================
@@ -510,7 +458,6 @@ async def process_query_research(
     score = result.get("score", "0/3")
     score_value = float(score.split("/")[0]) if "/" in str(score) else 0
     if score_value == 0:
-        print(f"\n❌ Score is 0/3 for query: '{query}' — skipping entirely")
         return None
 
     location = result.get("location")
@@ -520,19 +467,13 @@ async def process_query_research(
     place_image_url = None
     t1 = time.time()
     if location and api_key:
-        print(f"🗺️  Looking up Google Maps data for: {location}")
         maps_data = await get_google_maps_data(location, api_key)
         if maps_data:
-            print(f"✅ Google Maps data retrieved successfully")
             place_id = maps_data.get("place_id")
             if place_id:
                 place_image_url = await get_place_photo_url(place_id, api_key)
         else:
-            print(f"🗺️  No Google Maps data found for: {location}")
-    elif not api_key:
-        print("⚠️  Warning: GOOGLE_MAPS_API_KEY not set. Skipping maps lookup.")
-    print(f"⏱  Maps lookup: {time.time() - t1:.1f}s")
-
+            pass
     conversion_input = {
         "type": query_type,
         "original_query": original_query,
@@ -550,29 +491,22 @@ async def process_query_research(
         ],
     }
 
-    print("\n" + "🔄"*40)
-    print("🔄 CONVERSION INPUT PREPARED")
-    print("🔄"*40)
     if rag_response:
-        print("✅ RAG context included - OpenAI will exclude this content")
-        print(f"📋 RAG Context Keys: {list(rag_response.keys())}")
+        pass
     else:
-        print("ℹ️  No RAG context - Full research will be converted")
-    print("🔄"*40 + "\n")
+        pass
 
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     if not openai_api_key:
         raise ValueError("OPENAI_API_KEY environment variable not set")
 
     try:
-        print("🤖 Calling OpenAI for conversion...")
         t2 = time.time()
         formatted_data_list = await asyncio.to_thread(
             convert_research_to_attraction,
             conversion_input,
             openai_api_key,
         )
-        print(f"⏱  Conversion: {time.time() - t2:.1f}s")
 
         if formatted_data_list:
             # ── Override source with best citation (TripAdvisor → Yelp → other) ──
@@ -594,11 +528,9 @@ async def process_query_research(
                 place_city = formatted_data.get("city", "")
                 if api_key and place_title and place_city:
                     specific_query = f"{place_title}, {place_city}"
-                    print(f"🗺️  Looking up specific place: '{specific_query}'")
                     specific_maps = await get_google_maps_data(specific_query, api_key)
                     if specific_maps and specific_maps.get("place_id"):
                         place_maps_data = specific_maps
-                        print(f"✅ Specific place found: place_id={specific_maps['place_id']}")
                         place_details = await get_place_details(specific_maps["place_id"], api_key)
                         place_image = place_details["photo_url"]
                         # Update lat/lng from specific place
@@ -619,15 +551,11 @@ async def process_query_research(
                         if place_details["hours"]:
                             meta["hours"] = place_details["hours"]
                     else:
-                        print(f"⚠️  Specific place not found for '{specific_query}', using city-level maps data")
+                        pass
 
                 # ============================================
                 # SCORE-BASED ROUTING
                 # ============================================
-                print(f"\n{'📊'*40}")
-                print(f"📊 SCORE-BASED ROUTING — title: '{place_title}'")
-                print(f"{'📊'*40}")
-                print(f"📊 Score Value: {score_value}/3")
 
                 formatted_data["score_value"] = score_value
                 formatted_data["id"] = place_maps_data.get("place_id") if place_maps_data else None
@@ -635,48 +563,37 @@ async def process_query_research(
                     formatted_data["image"] = place_image
 
                 if skip_storage:
-                    print(f"📊 Action: Read-only mode (skip_storage=True) — no RAG upsert, no Supabase insert")
                     formatted_data["rag_upserted"] = False
                     formatted_data["db_id"] = None
 
                 elif score_value >= 2:
-                    print(f"📊 Action: Upsert to RAG only (skip database)")
                     t_upsert = time.time()
                     rag_success = await upsert_to_rag(formatted_data, place_maps_data)
                     formatted_data["rag_upserted"] = rag_success
                     formatted_data["db_id"] = None
                     if rag_success:
-                        print(f"✅ Successfully upserted to RAG: '{place_title}' ({time.time() - t_upsert:.1f}s)")
+                        pass
                     else:
-                        print(f"⚠️  Failed to upsert to RAG: '{place_title}'")
+                        pass
 
                 elif score_value >= 1:
-                    print(f"📊 Action: Save to Supabase only (score too low for RAG)")
                     try:
                         db_record = await supabase_service.insert_research_insight(formatted_data)
                         formatted_data["db_id"] = db_record.get("id")
                         formatted_data["created_at"] = db_record.get("created_at")
-                        print(f"✅ Saved to Supabase: '{place_title}' ID={db_record.get('id')}")
                     except Exception as e:
                         formatted_data["db_id"] = None
                         formatted_data["db_error"] = str(e)
-                        print(f"⚠️  Error saving to Supabase: {e}")
                     formatted_data["rag_upserted"] = False
                 else:
-                    print(f"📊 Action: Skip (score is 0)")
                     formatted_data["rag_upserted"] = False
 
-                print(f"{'📊'*40}\n")
                 all_formatted.append(formatted_data)
 
             # Return the first result for backwards compatibility (callers expect a single dict)
-            print(f"\n🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}'")
             return all_formatted[0] if len(all_formatted) == 1 else all_formatted[0]
-        print(f"\n🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}' (no formatted data)")
         return conversion_input["results"][0]
     except Exception as e:
-        print(f"\n❌ Error converting data with OpenAI: {e}")
-        print(f"🏁 process_query_research total: {time.time() - t_total:.1f}s for '{query}' (failed)")
         return conversion_input["results"][0]
 
 
@@ -690,11 +607,6 @@ async def process_in_background(query: str, reference: str, classification: Opti
     """
     try:
         t_bg = time.time()
-        print(f"\n{'='*80}")
-        print(f"🚀 Background Research Started")
-        print(f"Query (full): {query[:200]}{'...' if len(query) > 200 else ''}")
-        print(f"Reference: {reference}")
-        print(f"{'='*80}\n")
 
         supabase_service = SupabaseService()
 
@@ -702,9 +614,8 @@ async def process_in_background(query: str, reference: str, classification: Opti
             openai_service = OpenAIService()
             t_c = time.time()
             classification = await openai_service.classify_query(query)
-            print(f"✅ Classification completed: {classification.get('type')} ({time.time() - t_c:.1f}s)")
         else:
-            print(f"✅ Classification reused (pre-computed): {classification.get('type')}")
+            pass
 
         formatted_results: List[Dict[str, Any]] = []
 
@@ -716,7 +627,6 @@ async def process_in_background(query: str, reference: str, classification: Opti
             # the full research pipeline and does NOT block returning results.
             for q in sub_queries:
                 asyncio.create_task(run_whitelist_discovery(q))
-            print(f"🔐 Whitelist discovery fired for {len(sub_queries)} sub-queries (parallel)")
 
             if len(sub_queries) == 1:
                 result = await process_query_research(
@@ -726,7 +636,6 @@ async def process_in_background(query: str, reference: str, classification: Opti
                     supabase_service,
                     reference
                 )
-                print("✅ Single query research completed")
                 if result is not None:
                     formatted_results.append(result)
             else:
@@ -736,22 +645,10 @@ async def process_in_background(query: str, reference: str, classification: Opti
                 ]
                 all_results = await asyncio.gather(*tasks)
                 formatted_results = [r for r in all_results if r is not None]
-                print(f"✅ Multiple queries research completed: {len(formatted_results)} results")
 
-        print(f"\n{'='*80}")
-        print(f"✅ Background Research Completed in {time.time() - t_bg:.1f}s")
-        print(f"Type: {classification.get('type')} | Results: {len(formatted_results)} items processed")
-        print(f"{'='*80}\n")
 
     except Exception as e:
-        print(f"\n{'='*80}")
-        print(f"❌ Background Research Failed")
-        print(f"{'='*80}")
-        print(f"Error: {str(e)}")
-        print(f"Error Type: {type(e).__name__}")
         import traceback
-        print(f"Traceback:\n{traceback.format_exc()}")
-        print(f"{'='*80}\n")
 
 
 # -------------------------------------------------------
@@ -760,17 +657,11 @@ async def process_in_background(query: str, reference: str, classification: Opti
 async def process_deep_validation(query: str, reference: str) -> List[Dict[str, Any]]:
     """Run the same research pipeline as process_in_background but await results
     and return only items with score >= 2."""
-    print(f"\n{'='*80}")
-    print(f"🔬 Deep Validation Started")
-    print(f"Query: {query}")
-    print(f"Reference: {reference}")
-    print(f"{'='*80}\n")
 
     openai_service = OpenAIService()
     supabase_service = SupabaseService()
 
     classification = await openai_service.classify_query(query)
-    print(f"✅ Classification completed: {classification.get('type')}")
 
     all_results: List[Dict[str, Any]] = []
 
@@ -797,9 +688,5 @@ async def process_deep_validation(query: str, reference: str) -> List[Dict[str, 
     # Filter: keep only items with score >= 2
     high_score_results = [r for r in all_results if r.get("score_value", 0) >= 2]
 
-    print(f"\n{'='*80}")
-    print(f"✅ Deep Validation Completed")
-    print(f"Total results: {len(all_results)} | Score >= 2: {len(high_score_results)}")
-    print(f"{'='*80}\n")
 
     return high_score_results

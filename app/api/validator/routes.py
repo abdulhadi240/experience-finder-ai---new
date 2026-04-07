@@ -50,12 +50,6 @@ async def validator_health():
 @router.post("/process")
 async def validate_query(request: ValidatorRequest):
     """Main validation endpoint - checks for duplicate query, then starts research in background."""
-    print(f"\n{'='*80}")
-    print("📨 Request Received")
-    print(f"{'='*80}")
-    print(f"Query: {request.query}")
-    print(f"Reference: {request.reference}")
-    print(f"{'='*80}\n")
 
     try:
         # Extract the question-only portion for dedup/storage.
@@ -67,7 +61,6 @@ async def validate_query(request: ValidatorRequest):
         is_dup = await is_duplicate_query(question_only, supabase_service)
 
         if is_dup:
-            print("🔁 Query is a duplicate — skipping research\n")
             return {
                 "message": "Similar query already exists. Skipping research.",
                 "duplicate": True,
@@ -76,9 +69,8 @@ async def validate_query(request: ValidatorRequest):
         # ── Step 2: Save the question only ────────────────────
         try:
             await supabase_service.insert_saved_query(question_only)
-            print(f"✅ Query saved to saved_queries table")
-        except Exception as e:
-            print(f"⚠️  Could not save query (continuing anyway): {e}")
+        except Exception:
+            pass
 
         # ── Step 3: Start background research ─────────────────
         # Pass the FULL query (with Answer: block if present) so the classifier
@@ -90,30 +82,19 @@ async def validate_query(request: ValidatorRequest):
             )
         )
 
-        print("✅ Background task started, returning response to client\n")
         return {
             "message": "Research has started",
             "duplicate": False,
         }
 
     except Exception as e:
-        print(f"❌ Error: {str(e)}\n")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error starting research: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Error starting research: {str(e)}")
 
 
 @router.post("/deep_validation")
 async def deep_validation(request: ValidatorRequest):
     """Deep validation endpoint - runs the full research pipeline synchronously
     and returns JSON results only for items with score >= 2."""
-    print(f"\n{'='*80}")
-    print("🔬 Deep Validation Request Received")
-    print(f"{'='*80}")
-    print(f"Query: {request.query}")
-    print(f"Reference: {request.reference}")
-    print(f"{'='*80}\n")
 
     try:
         high_score_results = await process_deep_validation(
@@ -135,11 +116,7 @@ async def deep_validation(request: ValidatorRequest):
         }
 
     except Exception as e:
-        print(f"❌ Deep Validation Error: {str(e)}\n")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error during deep validation: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Error during deep validation: {str(e)}")
 
 
 @router.get("/whitelist")
@@ -291,15 +268,6 @@ async def rag_upsert(request: FrontendRAGUpsertRequest):
     Accepts the full payload from the frontend. updated_at is auto-generated.
     Forwards the payload to https://rag.hiptraveler.com/upsert.
     """
-    print(f"\n{'='*80}")
-    print("📤 RAG UPSERT REQUEST RECEIVED")
-    print(f"{'='*80}")
-    print(f"ID: {request.id}")
-    print(f"Title: {request.title}")
-    print(f"Category: {request.category}")
-    print(f"Location: {request.city}, {request.country}")
-    print(f"Query: {request.query}")
-    print(f"{'='*80}\n")
 
     allowed_languages = ["en", "fr", "it", "de", "es", "zh"]
     language = request.language if request.language in allowed_languages else "en"
@@ -347,9 +315,6 @@ async def rag_upsert(request: FrontendRAGUpsertRequest):
     if request.image:
         payload["image"] = request.image
 
-    print(f"📦 Payload to send to RAG:")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-
     # Forward to RAG API
     rag_url = "https://rag.hiptraveler.com/upsert"
     headers = {
@@ -363,10 +328,6 @@ async def rag_upsert(request: FrontendRAGUpsertRequest):
             response = await client.post(rag_url, json=payload, headers=headers)
             response.raise_for_status()
 
-            print(f"\n✅ RAG UPSERT SUCCESS")
-            print(f"Status Code: {response.status_code}")
-            print(f"Response: {response.text}\n")
-
             return RAGUpsertResponse(
                 success=True,
                 message="Document upserted successfully",
@@ -374,19 +335,11 @@ async def rag_upsert(request: FrontendRAGUpsertRequest):
             )
 
     except httpx.HTTPStatusError as e:
-        error_msg = f"RAG API returned error: {e.response.status_code} - {e.response.text}"
-        print(f"\n❌ RAG UPSERT FAILED: {error_msg}\n")
-        raise HTTPException(status_code=e.response.status_code, detail=error_msg)
-
+        raise HTTPException(status_code=e.response.status_code, detail=f"RAG API error: {e.response.status_code} - {e.response.text}")
     except httpx.TimeoutException:
-        error_msg = "RAG API request timed out after 30 seconds"
-        print(f"\n❌ RAG UPSERT FAILED: {error_msg}\n")
-        raise HTTPException(status_code=504, detail=error_msg)
-
+        raise HTTPException(status_code=504, detail="RAG API request timed out after 30 seconds")
     except Exception as e:
-        error_msg = f"Failed to upsert to RAG: {str(e)}"
-        print(f"\n❌ RAG UPSERT FAILED: {error_msg}\n")
-        raise HTTPException(status_code=500, detail=error_msg)
+        raise HTTPException(status_code=500, detail=f"Failed to upsert to RAG: {str(e)}")
 
 
 # -------------------------------------------------------

@@ -51,8 +51,7 @@ class SupabaseService:
             if response.data:
                 return response.data[0]
             raise RuntimeError("No data returned from insert operation")
-        except Exception as e:
-            print(f"Error inserting into Supabase: {e}")
+        except Exception:
             raise
 
     async def delete_all_research_insights(self) -> int:
@@ -65,10 +64,8 @@ class SupabaseService:
                 .execute()
             )
             deleted = len(response.data) if response.data else 0
-            print(f"🗑️ Deleted {deleted} rows from research_insights")
             return deleted
         except Exception as e:
-            print(f"Error deleting research_insights: {e}")
             raise
 
     async def get_insights_by_query(self, query: str) -> List[Dict[str, Any]]:
@@ -82,7 +79,6 @@ class SupabaseService:
             )
             return response.data or []
         except Exception as e:
-            print(f"Error fetching from Supabase: {e}")
             return []
         
         
@@ -102,7 +98,6 @@ class SupabaseService:
             )
             return response.data or []
         except Exception as e:
-            print(f"Error fetching saved_queries: {e}")
             return []
 
     async def insert_saved_query(self, query_text: str, expiry_days: int = 7) -> Dict[str, Any]:
@@ -123,7 +118,6 @@ class SupabaseService:
                 return response.data[0]
             raise RuntimeError("No data returned from insert operation")
         except Exception as e:
-            print(f"Error inserting into saved_queries: {e}")
             raise
         
     async def delete_all_saved_queries(self) -> int:
@@ -136,10 +130,8 @@ class SupabaseService:
                 .execute()
             )
             deleted = len(response.data) if response.data else 0
-            print(f"🗑️ Deleted {deleted} rows from saved_queries")
             return deleted
         except Exception as e:
-            print(f"Error deleting saved_queries: {e}")
             raise
 
     # -------------------------------------------------------
@@ -162,7 +154,6 @@ class SupabaseService:
             response = await asyncio.to_thread(lambda: query.execute())
             return response.data or []
         except Exception as e:
-            print(f"Error fetching whitelist_domains: {e}")
             return []
 
     async def is_source_whitelisted(
@@ -198,7 +189,6 @@ class SupabaseService:
                 return response.data[0]
             raise RuntimeError("No data returned from upsert operation")
         except Exception as e:
-            print(f"Error upserting whitelist_domain: {e}")
             raise
 
     async def delete_whitelist_domain(
@@ -216,7 +206,6 @@ class SupabaseService:
             )
             return len(response.data) if response.data else 0
         except Exception as e:
-            print(f"Error deleting whitelist_domain: {e}")
             raise
 
     async def delete_all_whitelist_domains(self) -> int:
@@ -230,5 +219,4 @@ class SupabaseService:
             )
             return len(response.data) if response.data else 0
         except Exception as e:
-            print(f"Error deleting all whitelist_domains: {e}")
             raise

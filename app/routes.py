@@ -1,4 +1,5 @@
 import asyncio
+import os
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
@@ -7,8 +8,13 @@ from fastapi.responses import StreamingResponse
 from .schemas import QueryRequest, UserCreateRequest
 from .memory import delete_user, create_new_user, get_user_memory_for_engage
 from .helpers import build_conversation_context, _main_stream, generate_engage_stream
+from . import redis_history
 
 router = APIRouter()
+
+_REDIS_TTL          = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
+_REDIS_IDLE_CUTOFF  = int(os.getenv("REDIS_IDLE_CUTOFF_SECONDS", "1200"))
+_REDIS_CTX_LIMIT    = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "3"))
 
 
 # ─── Main Chat Route ──────────────────────────────────────────────
@@ -16,12 +22,32 @@ router = APIRouter()
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
     try:
-        thread_id     = uuid.uuid4().hex
-        param         = request.param
-        final_message = build_conversation_context(request)
+        thread_id = uuid.uuid4().hex
+        param     = request.param
+
+        # ── Resolve Redis conversation ID ─────────────────────────
+        # Uses request.threadId when the frontend tracks the session,
+        # otherwise falls back to idle-cutoff logic in redis_history.
+        conversation_id = await redis_history.get_or_create_conversation_id(
+            request.user_id,
+            idle_cutoff_seconds=_REDIS_IDLE_CUTOFF,
+            ttl_seconds=_REDIS_TTL,
+            explicit_conversation_id=request.threadId or None,
+        )
+
+        # ── Load conversation history from Redis (sole source of context) ──
+        # Render dev: REDIS_ENABLED=false → returns [] instantly (no-op).
+        # AWS prod:   fetches from ElastiCache. old_interactions from frontend is ignored.
+        history: list[dict] = []
+        if conversation_id:
+            history = await redis_history.fetch_recent_interactions(
+                request.user_id, conversation_id, limit=_REDIS_CTX_LIMIT
+            )
+
+        final_message = build_conversation_context(request, history)
 
         return StreamingResponse(
-            _main_stream(request, thread_id, param, final_message),
+            _main_stream(request, thread_id, param, final_message, conversation_id=conversation_id, history=history),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

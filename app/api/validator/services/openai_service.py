@@ -52,7 +52,6 @@ class OpenAIService:
             }
 
         except Exception as e:
-            print(traceback.format_exc())
             raise RuntimeError(f"Error classifying query: {e}") from e
 
     def _validate_response(self, result: QueryClassification) -> None:

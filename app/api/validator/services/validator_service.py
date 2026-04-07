@@ -38,8 +38,8 @@ class ResearchValidator:
         # Immediately fetch and print domains
         try:
             asyncio.run(self._initialize_blacklist_domains())
-        except Exception as e:
-            print(f"⚠️ Error initializing blacklist domains: {e}")
+        except Exception:
+            pass
 
         # Whitelist domains are fetched per-query (category + country specific)
         # so we only store the current query's whitelist here temporarily.
@@ -53,21 +53,13 @@ class ResearchValidator:
             )
             return [row["domain"] for row in response.data] if response.data else []
         except Exception as e:
-            print(f"⚠️ Error fetching blacklist domains: {e}")
             return []
 
     async def _initialize_blacklist_domains(self):
         """Fetch blacklist domains and print them immediately"""
         self.blacklist_domains = await self.get_all_blacklist_domains()
-        if self.blacklist_domains:
-            print(f"🔒 Loaded {len(self.blacklist_domains)} blacklist domains:")
-            for domain in self.blacklist_domains:
-                print(f"  - {domain}")
-        else:
-            print("🔒 No blacklist domains found.")
 
-        
-        
+
     def search_openai(self, query: str) -> Dict[str, Any]:
         """Perform web search using OpenAI API."""
         url = "https://api.openai.com/v1/responses"
@@ -307,7 +299,6 @@ class ResearchValidator:
                 return result["content"] if isinstance(result["content"], str) else json.dumps(result["content"], indent=2)
             return json.dumps(result, indent=2)
         except Exception as e:
-            print(f"⚠️ Error extracting OpenAI content: {e}")
             return str(result)
     
     def _extract_openai_citations(self, result: Dict) -> List[str]:
@@ -325,8 +316,8 @@ class ResearchValidator:
                                 citations.append(url)
             if not citations and "sources" in result:
                 citations = [s.get("url") for s in result["sources"] if isinstance(s, dict) and s.get("url")]
-        except Exception as e:
-            print(f"⚠️ Error extracting OpenAI citations: {e}")
+        except Exception:
+            pass
         return citations
     
     def _extract_gemini_content(self, result: Dict) -> str:
@@ -337,8 +328,8 @@ class ResearchValidator:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 text_parts = [p.get("text", "") for p in parts if p.get("text")]
                 return "\n".join(text_parts).strip()
-        except Exception as e:
-            print(f"⚠️ Error extracting Gemini content: {e}")
+        except Exception:
+            pass
         return ""
 
     def _extract_gemini_citations(self, result: Dict) -> List[str]:
@@ -352,8 +343,8 @@ class ResearchValidator:
                     uri = chunk.get("web", {}).get("uri")
                     if uri:
                         citations.append(uri)
-        except Exception as e:
-            print(f"⚠️ Error extracting Gemini citations: {e}")
+        except Exception:
+            pass
         return citations
 
     def calculate_similarity_and_synthesize(self, research_results: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
@@ -454,8 +445,6 @@ Provide your response strictly in JSON format:
                 synthesis = json.loads(synthesis_text)
                 
                 # Debug: Print what OpenAI returned
-                print(f"\n🔍 DEBUG - OpenAI Synthesis Response:")
-                print(json.dumps(synthesis, indent=2))
                 
                 return {
                     "success": True,
@@ -478,10 +467,6 @@ Provide your response strictly in JSON format:
         Loads whitelist domains for this query category + country, then
         fires all 3 web searches in parallel via ThreadPoolExecutor.
         """
-        print(f"\n{'='*80}")
-        print(f"🔎 PARALLEL WEB RESEARCH — 3 sources firing simultaneously")
-        print(f"📤 Query: '{query}'")
-        print(f"{'='*80}")
 
         # ── Load whitelist for this query ─────────────────────────────────────
         category = _extract_category(query)
@@ -489,13 +474,8 @@ Provide your response strictly in JSON format:
 
         if country:
             self._current_whitelist = fetch_whitelist_domains(category, country)
-            if self._current_whitelist:
-                print(f"✅ Whitelist loaded [{category}/{country}]: {self._current_whitelist}")
-            else:
-                print(f"ℹ️  No whitelist entries for [{category}/{country}]")
         else:
             self._current_whitelist = []
-            print(f"ℹ️  Could not resolve country — whitelist skipped")
 
         t_start = time.time()
 
@@ -520,16 +500,8 @@ Provide your response strictly in JSON format:
                 ok      = result.get("success") and result.get("content")
                 content = str(result.get("content", ""))
                 status  = "✅" if ok else "❌"
-                print(f"  {status} {source} done at {time.time() - t_start:.1f}s — "
-                      f"{len(content)} chars | {len(result.get('citations', []))} citations")
-                if ok:
-                    print(f"     Preview: {content[:300]}")
-                else:
-                    print(f"     Error: {result.get('error')}")
-
                 # Start synthesis as soon as 2 results are ready — overlaps with slowest search
                 if len(research_results) == 2 and synthesis_future is None:
-                    print(f"🚀 Starting early synthesis with 2/3 results at {time.time() - t_start:.1f}s...")
                     synthesis_future = executor.submit(
                         self.calculate_similarity_and_synthesize,
                         research_results.copy(),
@@ -546,15 +518,11 @@ Provide your response strictly in JSON format:
 
             synthesis_result = synthesis_future.result()
 
-        print(f"⚡ All 3 searches + synthesis completed in {time.time() - t_start:.1f}s")
 
         successful = [r for r in research_results if r.get('success') and r.get('content')]
-        print(f"\n📊 {len(successful)}/3 sources with content")
-        print(f"{'='*80}\n")
 
-        print(f"🧪 Synthesis success: {synthesis_result.get('success')}")
         if not synthesis_result.get('success'):
-            print(f"🧪 Synthesis error: {synthesis_result.get('error')}")
+            pass
         
         # Aggregate all citations
         all_citations = []
@@ -582,9 +550,6 @@ Provide your response strictly in JSON format:
                     location = "Unknown"
             
             score = f"{synthesis.get('similarity_score', 0)}/3"
-            print(f"\n✅ Final location value: '{location}'")
-            print(f"✅ Final score: {score}")
-            print(f"✅ Citations count: {len(unique_citations)}")
             
             return {
                 "score": score,
@@ -593,7 +558,6 @@ Provide your response strictly in JSON format:
                 "citations": unique_citations
             }
         else:
-            print(f"\n❌ Synthesis failed — returning score 0/3")
             return {
                 "score": "0/3",
                 "research": f"Error: {synthesis_result.get('error', 'Unknown error')}",

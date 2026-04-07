@@ -1,6 +1,16 @@
 import warnings
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="zep_cloud")
 
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+# Silence noisy third-party loggers — only Redis logs should appear
+for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access", "zep_cloud", "hpack"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+from dotenv import load_dotenv
+load_dotenv()  # loads .env into os.environ so redis_history.py can read REDIS_ENABLED, REDIS_URL etc.
+
 import uvicorn
 from fastapi import FastAPI
 from app.routes import router as chat_router

@@ -123,8 +123,6 @@ def rag(query: str , reference: str) -> Dict[str, Any]:
         
         # Raise an exception for bad status codes
         response.raise_for_status()
-        print(response.json())
-        
         # Try to parse JSON response
         try:
             return response.json()
@@ -188,8 +186,6 @@ def place_search(queries: List[Dict[str, str]], reference: str = "hiptraveler") 
         "Accept": "application/json"
     }
 
-    print(f"--- Sending Request ---\nURL: {url}\nPayload: {json.dumps(payload, indent=2)}")
-
     try:
         # Send POST request
         response = requests.post(
@@ -199,20 +195,14 @@ def place_search(queries: List[Dict[str, str]], reference: str = "hiptraveler") 
             timeout=45  # Increased timeout for batch processing
         )
 
-        # Print Raw Response info for debugging
-        print(f"--- Response Received ---\nStatus Code: {response.status_code}")
-        print(f"Raw Text: {response.text[:500]}...") # Print first 500 chars to avoid clutter
-
         # Raise an exception for bad status codes
         response.raise_for_status()
         
         # Try to parse JSON response
         try:
             data = response.json()
-            # print(f"Parsed JSON: {json.dumps(data, indent=2)}") # Optional: Print full parsed JSON
             return data
-        except json.JSONDecodeError as json_err:
-            print(f"!!! JSON Decode Error: {json_err}")
+        except json.JSONDecodeError:
             # If response is not JSON, return a wrapped text response
             return {
                 "status": "error",
@@ -222,16 +212,12 @@ def place_search(queries: List[Dict[str, str]], reference: str = "hiptraveler") 
             }
 
     except requests.exceptions.Timeout:
-        print("!!! Error: Request timed out after 45 seconds")
         raise requests.exceptions.RequestException("Request timed out after 45 seconds")
     except requests.exceptions.ConnectionError:
-        print("!!! Error: Failed to connect to the webhook")
         raise requests.exceptions.RequestException("Failed to connect to the webhook")
     except requests.exceptions.HTTPError as e:
-        print(f"!!! HTTP Error: {e}")
         raise requests.exceptions.RequestException(f"HTTP error occurred: {e}")
     except requests.exceptions.RequestException as e:
-        print(f"!!! General Request Error: {e}")
         raise requests.exceptions.RequestException(f"Request failed: {e}")
     
 def research_further(query: str, reference: str = "hiptraveler"):
@@ -263,20 +249,17 @@ def research_further(query: str, reference: str = "hiptraveler"):
             )
 
             if isinstance(is_dup, Exception):
-                print(f"⚠️ Dedup check failed ({is_dup}), continuing")
                 is_dup = False
             if isinstance(classification, Exception):
-                print(f"⚠️ classify_query failed ({classification}), aborting")
                 return
 
             if is_dup:
-                print(f"🔁 research_further: duplicate — skipping '{question_only}'")
                 return
 
             try:
                 await supabase_service.insert_saved_query(question_only)
-            except Exception as e:
-                print(f"⚠️ research_further: could not save query ({e}), continuing")
+            except Exception:
+                pass
 
             # Pass the pre-computed classification so process_in_background skips the classify call
             await process_in_background(query=query_inner.strip(), reference=reference, classification=classification)
