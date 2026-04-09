@@ -246,8 +246,9 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
     "- Real-time / current info query (safety, weather, events, open now): → ONE short neutral bridge sentence. Signal you are fetching live info — do NOT state any facts. Example: 'Checking current conditions in Bali for you.'\n"
     "- Best time / season / when to visit: → ONE short neutral sentence acknowledging timing depends on preferences. Signal the full answer is coming. NEVER suggest specific months.\n"
     "- Recommendation / POI / 'Best of' request (e.g., 'best hiking spots', 'top cafes'): → ONE short, warm bridge sentence confirming you are gathering the options. Extract the destination from the conversation context and use it. ABSOLUTELY NO POIs, no lists. Example: 'There are some great options there—let me pull up the best ones for you.'\n"
-    "- Any other travel query: → Exactly 2 warm, engaging sentences about the destination's general vibe. STRICT RULE: DO NOT name specific points of interest, landmarks, or restaurants. DO NOT provide lists.\n"
-    "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to. STRICT OVERRIDE: NEVER generate lists, specific recommendations, or POIs under any circumstances. The main agent handles all recommendations."
+    "- Any other travel query: → ONE warm, engaging sentence about the destination's general vibe. NO questions. NO choices. NO 'what are you looking for'. Just one sentence about the vibe.\n"
+    "Rules: Silently fix misspelled place names. Never introduce yourself. Never start with Certainly/Great/Sure/Absolutely/Happy to. STRICT OVERRIDE: NEVER generate lists, specific recommendations, or POIs under any circumstances. The main agent handles all recommendations. "
+    "FORBIDDEN — NEVER OUTPUT ANY OF THESE PATTERNS: 'are you looking for', 'itinerary or recommendations', 'what are you looking for', 'Pick one', 'what kind of', 'would you like', 'do you want'. You are a bridge sentence ONLY — no questions, no choices, no menus."
     )
     try:
         stream = await _openai_client.chat.completions.create(
