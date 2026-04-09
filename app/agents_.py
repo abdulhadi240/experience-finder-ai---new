@@ -713,9 +713,17 @@ Only reached if the query IS travel-related.
 
 Ask yourself one question: **What does the user actually want to happen right now?**
 
-**isTravelRelated = true** — The user's underlying intent is to have a trip itinerary built for them RIGHT NOW. Both conditions must be true:
-- They have mentally committed to a specific destination (even if loosely stated)
-- Their core intent is "build/generate the plan", not "help me decide" or "give me ideas"
+**isTravelRelated = true** — The user's underlying intent is to have a trip itinerary built for them. Check BOTH the current message AND the full conversation history to determine this. Both conditions must be true:
+- They have mentally committed to a specific destination (even if loosely stated) — check the ENTIRE conversation, not just the current message
+- Their core intent is "build/generate the plan", not "help me decide" or "give me ideas" — this can be established in ANY prior message, not just the current one
+
+**⚠️ CONVERSATION CONTINUITY RULE (CRITICAL):**
+If the conversation history shows the user previously expressed planning intent (e.g., "I want to plan a trip", "plan a trip in July", "build an itinerary") — that intent CARRIES FORWARD through the entire conversation. It does NOT reset with each new message. Subsequent messages that narrow down the destination (e.g., "asia" → "japan" → "tokyo") are CONTINUING the planning flow, not starting a new exploration.
+
+When the user is in an active planning flow:
+- A destination name ("tokyo", "japan", "bali") = continuing the plan → isTravelRelated = true
+- A planning word ("itinerary", "plan it", "yes", "sure") = confirming the plan → isTravelRelated = true
+- A short answer to a planning question (city name, date, number of days) = providing details for the plan → isTravelRelated = true
 
 Examples where intent = build the plan:
 - "Plan a 7-day trip to Morocco" ✅ — destination fixed, wants the plan generated
@@ -723,27 +731,30 @@ Examples where intent = build the plan:
 - "I'm heading to Bali for 5 days, what should we do each day?" ✅ — destination fixed, asking for a structured plan
 - The AI asked "Want me to build a trip itinerary?" and the user replied "yes / sure / go ahead / please" ✅ — explicitly accepting the offer
 - The AI asked "Want me to build a trip itinerary around these in Tokyo?" and the user replied "itinerary" ✅ — single-word planning trigger, destination already established
-- User said "Japan" then "itinerary" then "Tokyo" then "itinerary" — the second "itinerary" is a renewed plan request with Tokyo as the destination ✅
-- **SINGLE-WORD PLANNING TRIGGER RULE:** If the user's current message is a single word or short phrase that explicitly signals planning intent — "itinerary", "plan", "build it", "yes", "sure", "ok", "go ahead", "proceed" — AND the conversation history shows an established destination (city or country mentioned in any prior user message) AND a prior planning conversation (assistant previously asked about itinerary or building a plan) → isTravelRelated = true. Do NOT default to false just because the current message is short.
+- User previously said "I want to plan a trip in July" → then said "asia" → then said "japan" → then said "tokyo" ✅ — progressive narrowing within an active planning flow, isTravelRelated = true for ALL of these messages
+- User previously said "I want to plan a trip" → then said "itinerary" ✅ — planning intent was established earlier, current message confirms it
 
-**isTravelRelated = false** — The user's underlying intent is to explore, discover, get advice, or be inspired. They are NOT ready for a plan to be generated yet. This includes:
-- Asking for destination suggestions ("where should we go?", "what's a good place for...?")
+**isTravelRelated = false** — The user's underlying intent is to explore, discover, get advice, or be inspired. There is NO prior planning intent in the conversation history. This includes:
+- Asking for destination suggestions ("where should we go?", "what's a good place for...?") with NO prior planning context
 - Seeking advice or opinions ("is September good for Europe?", "what would you recommend?")
 - Researching a topic ("what's the food scene like in Tokyo?", "how safe is Colombia?")
 - Asking about experiences, places, activities, hotels, or restaurants
 - Using words like "plan" or "help me plan" but still asking WHERE or WHAT — the word "plan" does not determine intent; the stage of the decision does
 
-Examples where intent = still deciding / exploring:
-- "Help me plan a romantic getaway for my wife and I in September, where should we go?" ❌ — asking for destination advice, not requesting a plan
-- "Help me plan a honeymoon, what are the best destinations?" ❌ — discovery phase, no destination committed
-- "We want to travel this summer, any suggestions?" ❌ — open-ended advice request
-- "What are fun things to do in Las Vegas?" ❌ — information request
-- "Best beaches in Thailand?" ❌ — research
-- "Top restaurants in Rome?" ❌ — recommendation request
-- "Is October a good time to visit India?" ❌ — advice seeking
-- "Give me 5 places to visit in Karachi" ❌ — list/inspiration request
+Examples where intent = still deciding / exploring (NO prior planning flow):
+- First message: "Help me plan a romantic getaway for my wife and I in September, where should we go?" ❌ — asking for destination advice, not requesting a plan
+- First message: "Help me plan a honeymoon, what are the best destinations?" ❌ — discovery phase, no destination committed
+- First message: "We want to travel this summer, any suggestions?" ❌ — open-ended advice request
+- First message: "What are fun things to do in Las Vegas?" ❌ — information request
+- First message: "Best beaches in Thailand?" ❌ — research
+- First message: "Top restaurants in Rome?" ❌ — recommendation request
+- First message: "Is October a good time to visit India?" ❌ — advice seeking
+- First message: "Give me 5 places to visit in Karachi" ❌ — list/inspiration request
 
-**The core rule:** Does the user have a destination AND want a plan generated right now? → true. Is the user still figuring things out, asking for ideas, or seeking advice? → false. Ignore the words used — read the intent.
+**The core rule:** Read the FULL conversation history for planning intent, BUT the current message always takes priority.
+- If the current message is clearly an explore/research/recommendation query (e.g., "best restaurants in Tokyo?", "what's the nightlife like?", "top beaches?") → isTravelRelated = false, even if prior messages had planning intent. The user has shifted to exploring.
+- If the current message is neutral (a short destination name like "tokyo", "yes", "itinerary", or a planning detail like "5 days") AND prior messages show planning intent → isTravelRelated = true. The user is continuing the plan.
+- If there is no planning intent anywhere in the conversation → false.
 
 ---
 
@@ -779,8 +790,8 @@ Examples:
 ✓ Is the user asking about their own saved preferences or selections? (If yes → isMemoryQuery: true, skip all other steps)
 ✓ Did I analyze full intent, not just a keyword?
 ✓ Does the query mention or imply a destination/travel context? (If yes → not OFF_TOPIC)
-✓ Is the user asking for restaurant/hotel/activity recommendations? (If yes → isTravelRelated = false, always)
-✓ Did the user explicitly ask to PLAN/ITINERARY in this message, OR affirmatively respond to a planning question? (If no → isTravelRelated = false)
+✓ Is the user asking for restaurant/hotel/activity recommendations with NO prior planning context in the conversation? (If yes → isTravelRelated = false)
+✓ Did the user express planning intent ANYWHERE in the conversation history (not just the current message)? Check ALL prior "User:" messages for words like "plan", "trip", "itinerary", "travel". If planning intent exists in ANY prior message AND a destination is known → isTravelRelated = true. Do NOT limit this check to the current message only.
 ✓ Does my solution stay 100% within travel? (Never offer general help)
 ✓ For OFF_TOPIC: Did I redirect to a travel angle?
 ✓ isMemoryQuery is false for all non-memory queries.
