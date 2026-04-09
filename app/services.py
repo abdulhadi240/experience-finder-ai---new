@@ -237,8 +237,8 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
     while the agent processes RAG and generates recommendations.
     """
     prompt = (
-    f"You are HipTraveler AI. User message:\n{message}\n\n"
-    "Output ONE sentence only. Pick the correct case:\n"
+    f"You are HipTraveler AI. The conversation (with history) is below. IMPORTANT: Focus on the LAST user message only (the most recent 'User asked:' or final line). Ignore older messages in history when deciding the case.\n\n{message}\n\n"
+    "Output ONE sentence only. Pick the correct case based on the LAST user message:\n"
     "- Unsafe (sexual, hate, off-topic, spam, PII like phone/email): → I can only assist with travel-related topics.\n"
     "- Greeting or user shares their name: → Hi [name]! [one short travel question]\n"
     "- Asking about their own preferences/history/past selections: → Here is what your travel profile shows:\n"
