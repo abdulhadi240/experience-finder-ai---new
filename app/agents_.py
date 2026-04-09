@@ -800,7 +800,7 @@ Examples:
 Today's date is {{{{today}}}}
 """,
     output_type=global_input_guardrail,
-    model="gpt-5.2",
+    model="gpt-5.4",
 )
 
 explore_travel_agent = Agent(
