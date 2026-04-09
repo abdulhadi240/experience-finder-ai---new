@@ -305,6 +305,32 @@ async def append_interaction(
     logger.info("[Redis SAVED] A: %s", answer)
 
 
+async def clear_conversation(user_id: str, conversation_id: Optional[str]) -> None:
+    """
+    Delete all interactions for the given user+conversation and reset the
+    active-conversation pointer so the next request starts fresh.
+    No-op if Redis unavailable.
+    """
+    if not conversation_id:
+        return
+
+    r = await get_redis()
+    if not r:
+        return
+
+    try:
+        pipe = r.pipeline(transaction=True)
+        pipe.delete(_key_interactions(user_id, conversation_id))
+        pipe.delete(_key_active_conv(user_id))
+        await pipe.execute()
+        logger.info(
+            "[Redis CLEARED] user=%s | conv=%s",
+            user_id, conversation_id,
+        )
+    except Exception as e:
+        logger.warning("Redis clear failed: %s", e)
+
+
 async def close_redis() -> None:
     """
     Optional: call this on app shutdown if you wire it into FastAPI lifespan.

@@ -28,7 +28,7 @@ import logging
 
 _log = logging.getLogger("app.agent")
 
-_REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "600"))
+_REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "120"))
 _REDIS_MAX      = int(os.getenv("REDIS_OLD_INTERACTIONS_MAX", "30"))
 
 
@@ -382,13 +382,18 @@ async def _main_stream(
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
-            # ── Save plan Q&A to Redis (summary is the conversational text) ──
-            if request.user_id and conversation_id and response_content.summary:
-                asyncio.create_task(_redis_history.append_interaction(
-                    request.user_id, conversation_id,
-                    question=request.message, answer=response_content.summary,
-                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
-                ))
+            # ── Clear or save to Redis ──
+            if request.user_id and conversation_id:
+                if response_content.feedback is None:
+                    asyncio.create_task(_redis_history.clear_conversation(
+                        request.user_id, conversation_id,
+                    ))
+                elif response_content.summary:
+                    asyncio.create_task(_redis_history.append_interaction(
+                        request.user_id, conversation_id,
+                        question=request.message, answer=response_content.summary,
+                        max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                    ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
@@ -509,13 +514,19 @@ async def _main_stream(
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
-            # ── Save plan Q&A to Redis ────────────────────────────
-            if request.user_id and conversation_id and response_content.summary:
-                asyncio.create_task(_redis_history.append_interaction(
-                    request.user_id, conversation_id,
-                    question=request.message, answer=response_content.summary,
-                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
-                ))
+            # ── Clear or save to Redis ────────────────────────────
+            if request.user_id and conversation_id:
+                if response_content.feedback is None:
+                    # Plan is complete (no more questions) → clear history in background
+                    asyncio.create_task(_redis_history.clear_conversation(
+                        request.user_id, conversation_id,
+                    ))
+                elif response_content.summary:
+                    asyncio.create_task(_redis_history.append_interaction(
+                        request.user_id, conversation_id,
+                        question=request.message, answer=response_content.summary,
+                        max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                    ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
