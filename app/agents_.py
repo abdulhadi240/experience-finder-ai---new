@@ -687,9 +687,18 @@ If any safety issue is found → isValid = false with the matching reason. Skip 
 
 ## STEP 2 — TRAVEL RELEVANCE
 
-Analyze the **full intent** of the query, not individual keywords.
+Analyze the **full intent** of the query using BOTH the current message AND the conversation history.
 
-**Core question:** Is the user asking about this topic in the context of a destination, trip, or travel experience?
+**Core question:** Is the user's message connected to travel — either on its own OR in the context of the ongoing conversation?
+
+**⚠️ CONVERSATION CONTEXT RULE (CRITICAL):**
+If the conversation history is about travel (destinations, trips, recommendations, planning), then short affirmative responses or selections from the user are ALWAYS travel-related. Examples:
+- Assistant listed travel recommendations → User says "yes go for Marina District" → ✅ TRAVEL-RELATED (selecting from travel options)
+- Assistant asked about a trip → User says "yes" / "sure" / "go ahead" / "that one" / "the first one" → ✅ TRAVEL-RELATED (continuing travel conversation)
+- Assistant asked "Want me to build a trip itinerary?" → User says "yes" → ✅ TRAVEL-RELATED
+- Any short reply ("ok", "sounds good", "let's do it", a place name, a date, a number) in an active travel conversation → ✅ TRAVEL-RELATED
+
+**NEVER mark a message as OFF_TOPIC if the conversation history is about travel.** The user is continuing the travel conversation, not changing the topic.
 
 **Travel-related** — Topic + destination/travel context:
 - "Best cooking classes in Bangkok" ✅ (food + destination)
@@ -697,13 +706,13 @@ Analyze the **full intent** of the query, not individual keywords.
 - "Do I need a VPN in China?" ✅ (tech + travel)
 - "Best coworking spaces in Lisbon" ✅ (business + travel)
 
-**NOT travel-related** — Zero connection to travel or destinations:
-- "How to make pasta at home?" ❌ (pure cooking)
-- "Who won the Super Bowl?" ❌ (pure sports)
-- "How does AI work?" ❌ (pure tech)
-- "Symptoms of flu?" ❌ (pure health)
+**NOT travel-related** — Zero connection to travel AND no travel context in conversation history:
+- "How to make pasta at home?" ❌ (pure cooking, no travel history)
+- "Who won the Super Bowl?" ❌ (pure sports, no travel history)
+- "How does AI work?" ❌ (pure tech, no travel history)
+- "Symptoms of flu?" ❌ (pure health, no travel history)
 
-If NOT travel-related → isValid = false, reason = OFF_TOPIC.
+If NOT travel-related AND no travel context in conversation → isValid = false, reason = OFF_TOPIC.
 
 ---
 
