@@ -35,14 +35,19 @@ async def unified_chat(request: QueryRequest):
             explicit_conversation_id=request.threadId or None,
         )
 
-        # ── Load conversation history from Redis (sole source of context) ──
-        # Render dev: REDIS_ENABLED=false → returns [] instantly (no-op).
-        # AWS prod:   fetches from ElastiCache. old_interactions from frontend is ignored.
+        # ── Load conversation history from Redis, fallback to old_interactions ──
         history: list[dict] = []
         if conversation_id:
             history = await redis_history.fetch_recent_interactions(
                 request.user_id, conversation_id, limit=_REDIS_CTX_LIMIT
             )
+
+        # Fallback: if Redis returned nothing, use old_interactions from frontend
+        if not history and request.old_interactions:
+            history = [
+                {"question": item.question, "answer": item.answer}
+                for item in request.old_interactions[-_REDIS_CTX_LIMIT:]
+            ]
 
         final_message = build_conversation_context(request, history)
 
