@@ -71,10 +71,12 @@ trip_planning_agent = Agent(
     - If no destination can be identified from any of the above sources, include it in the feedback as instructed below.
 
     **⚠️ AFFIRMATIVE RESPONSE RULE — CRITICAL:**
-    If the user's current message is a short affirmative ("yes", "sure", "go ahead", "please", "let's do it", "that one", "sounds good", etc.) AND the most recent assistant message offered destinations or asked about planning, you MUST extract the destination(s) from that assistant message and use them.
+    If the user's current message is a short affirmative OR a direct planning trigger word — including: "yes", "sure", "go ahead", "please", "let's do it", "that one", "sounds good", "itinerary", "plan it", "build it", "let's go", "do it", "make it", "proceed", "ok", "okay", or any similar phrase — AND the most recent assistant message offered destinations, asked about planning, or asked "Want me to build a trip itinerary around [city]?", you MUST extract the destination(s) from that assistant message and use them.
     - Example: Assistant said "Want me to build a trip itinerary around Del Mar or San Francisco?" → User says "yes" → destinations: ["Del Mar", "San Francisco"]
+    - Example: Assistant said "Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo"]
+    - Example: Assistant said "Exploring Tokyo offers a vibrant mix... Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo"]
     - If the assistant listed multiple destinations and the user said "yes" without specifying one, include ALL mentioned destinations from the assistant's last message.
-    - NEVER ask "Where would you like to go?" when the user just said yes to a destination offer — the destination is already established in the conversation.
+    - NEVER ask "Where would you like to go?" when the user just said yes/itinerary to a destination offer — the destination is already established in the conversation.
 
     **GRANULARITY RULE:**
     - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
@@ -713,6 +715,9 @@ Examples where intent = build the plan:
 - "We're going to Paris in June, build us an itinerary" ✅ — destination fixed, wants output
 - "I'm heading to Bali for 5 days, what should we do each day?" ✅ — destination fixed, asking for a structured plan
 - The AI asked "Want me to build a trip itinerary?" and the user replied "yes / sure / go ahead / please" ✅ — explicitly accepting the offer
+- The AI asked "Want me to build a trip itinerary around these in Tokyo?" and the user replied "itinerary" ✅ — single-word planning trigger, destination already established
+- User said "Japan" then "itinerary" then "Tokyo" then "itinerary" — the second "itinerary" is a renewed plan request with Tokyo as the destination ✅
+- **SINGLE-WORD PLANNING TRIGGER RULE:** If the user's current message is a single word or short phrase that explicitly signals planning intent — "itinerary", "plan", "build it", "yes", "sure", "ok", "go ahead", "proceed" — AND the conversation history shows an established destination (city or country mentioned in any prior user message) AND a prior planning conversation (assistant previously asked about itinerary or building a plan) → isTravelRelated = true. Do NOT default to false just because the current message is short.
 
 **isTravelRelated = false** — The user's underlying intent is to explore, discover, get advice, or be inspired. They are NOT ready for a plan to be generated yet. This includes:
 - Asking for destination suggestions ("where should we go?", "what's a good place for...?")
@@ -927,6 +932,7 @@ Your job is to format that RAG data into a clean, helpful response. You rely sol
   - "Want me to build a trip itinerary around these in {{city}}?" (replace {{city}} with the actual city name)
   - "Want me to build a trip itinerary around any of these?" (use this when no single city applies)
 - ⚠️ CRITICAL: Do NOT ask about specific items, venues, events, or details from the recommendations. Do NOT offer to explore sub-topics (e.g., "where the blackjack tables are", "upcoming events at X"). The ONLY follow-up question allowed is one of the two itinerary steering questions above.
+- ⚠️ NEVER ask "are you looking for a day-by-day itinerary or just recommendations?" — this is forbidden. The steering question is always one of the two above, never a choice between itinerary and recommendations.
 
 ** Places Metadata Block (ABSOLUTE FINAL ELEMENT)**
 - NOTHING comes after the closing $$$$$.
@@ -1015,6 +1021,7 @@ You MUST use web search to find accurate, up-to-date information. Do NOT answer 
   - "Want me to build a trip itinerary around these in {{city}}?" (replace {{city}} with the actual city name)
   - "Want me to build a trip itinerary around any of these?" (use this when no single city applies)
 - ⚠️ CRITICAL: Do NOT ask about specific items, venues, events, or details from the recommendations. Do NOT offer to explore sub-topics (e.g., "where the blackjack tables are", "upcoming events at X"). The ONLY follow-up question allowed is one of the two itinerary steering questions above.
+- ⚠️ NEVER ask "are you looking for a day-by-day itinerary or just recommendations?" — this is forbidden. The steering question is always one of the two above, never a choice between itinerary and recommendations.
 
 ** Places Metadata Block (ABSOLUTE FINAL ELEMENT)**
 - NOTHING comes after the closing $$$$$.
