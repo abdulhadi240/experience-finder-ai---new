@@ -62,7 +62,7 @@ trip_planning_agent = Agent(
 
     3. **Most recent conversation message (Last conversation):** If no destination found yet, check the most recent exchange in the conversation history.
 
-    4. **Older conversation messages:** Only fall back to older messages if no destination was found in steps 1–3. Never let an older message override a destination found in a more recent step.
+    4. **Older conversation messages:** Only fall back to older messages if no destination was found in steps 1–3. Never let an older message override a destination found in a more recent step. Pay special attention to short user messages that name a city (e.g., "Tokyo", "Osaka", "Paris") — these are direct answers to a previous city preference question and must be extracted as the destination. Once a city is found this way, remove `cityPreference` from feedback and never ask for it again.
 
     - **Directly mentioned**: The user explicitly states a destination (e.g., "I want to go to Reno").
     - **Indirectly mentioned**: The destination is not stated outright but can be inferred from context clues within the conversation. For example, if the user is discussing "neighbours in Reno," the destination is not explicitly requested, but "Reno" can be identified as the relevant destination from the surrounding context.
@@ -108,8 +108,8 @@ trip_planning_agent = Agent(
     - If they say they have no preference / "you choose" / "best ones" / "doesn't matter" / "surprise me" / any equivalent → auto-select 3–4 top popular cities for that country (e.g., for Mexico: `["Mexico City", "Cancun", "Guadalajara"]`), remove `cityPreference` from feedback
 
     **Override — do NOT add `cityPreference` if:**
-    - The user has already named specific cities in the conversation
     - `destinations` already contains city-level names
+    - **ANY user message across the ENTIRE conversation history named a specific city** — even if that message was several turns ago. Scan every "User:" line in the full history. If the user ever replied with a city name (e.g., "Tokyo", "Paris", "Bangkok") — whether as a standalone message or part of a sentence — treat that city as the established destination and NEVER ask for cityPreference again. Use that city in `destinations` and remove `cityPreference` from feedback.
 
     =====================================================================
     🧾 TripPlan Schema
