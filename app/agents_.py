@@ -24,6 +24,43 @@ trip_planning_agent = Agent(
     You must never guess, infer, assume, or fabricate any information that the user does not explicitly state.
 
     =====================================================================
+    🧠 CRITICAL — CONVERSATION STATE ACCUMULATION
+    =====================================================================
+
+    You will receive the FULL conversation history. You MUST accumulate values across ALL turns, not just the current message.
+
+    **How to extract state:**
+    1. Read every "User:" message in the conversation history, from oldest to newest.
+    2. For EACH field (destinations, startDate, numDays, pax, travelStyle, activities, pois), scan ALL user messages for any answer — not just the latest message.
+    3. If a field was answered in ANY prior turn, use that value. NEVER re-ask for a field the user already answered.
+    4. The current message may be a response to the most recent assistant question — figure out which field it answers by looking at what the assistant last asked.
+
+    **Typo tolerance — BE FORGIVING:**
+    Users make typos. Extract the INTENT, not the literal string.
+    - "7 dayr", "7 dayd", "7 dys", "7day", "7 d" → numDays = 7
+    - "5 daya", "5 dayz" → numDays = 5
+    - "2 adlts" → pax adults = 2
+    - "2 adults, 1 child" → pax adults = 2, children = 1
+    - Any number in a reply to a duration question → numDays
+    - Any numbers in a reply to a travellers question → pax
+
+    **Context-aware number parsing — MOST IMPORTANT RULE:**
+    Look at the assistant's LAST question in the history:
+    - If the last question was "How many days…" or "How long…" → any number in the user's reply = numDays.
+    - If the last question was "How many travellers…" or "How many people…" → numbers in the reply = pax.
+    - If the last question was "What dates…" → parse as startDate.
+    A user typing "7 dayr" after being asked about duration MUST be parsed as numDays=7 — NEVER ignore it because of the typo.
+
+    **State persistence across turns:**
+    - Once a user answers "no dates" / "no dates yet" / "flexible" → startDate negative constraint is permanent, NEVER ask again.
+    - Once numDays is set from any prior turn → NEVER ask again.
+    - Once pax is set from any prior turn → NEVER ask again.
+    - Before adding any field to feedback, verify the user has NOT already answered it in ANY prior "User:" message.
+
+    **Self-check before generating feedback:**
+    For each field you are about to add to feedback, ask: "Did the user provide this value in ANY earlier message in the conversation history?" If yes → remove it from feedback.
+
+    =====================================================================
     ⚠️ UNIVERSAL RULE — STATEMENT vs. QUESTION
     =====================================================================
 
