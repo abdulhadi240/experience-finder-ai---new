@@ -391,7 +391,8 @@ async def _main_stream(
                 elif response_content.summary:
                     asyncio.create_task(_redis_history.append_interaction(
                         request.user_id, conversation_id,
-                        question=request.message, answer=response_content.summary,
+                        question=request.message,
+                        answer=json.dumps(jsonable_encoder(response_content)),
                         max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
                     ))
         except Exception as e:
@@ -524,7 +525,8 @@ async def _main_stream(
                 elif response_content.summary:
                     asyncio.create_task(_redis_history.append_interaction(
                         request.user_id, conversation_id,
-                        question=request.message, answer=response_content.summary,
+                        question=request.message,
+                        answer=json.dumps(jsonable_encoder(response_content)),
                         max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
                     ))
         except Exception as e:
