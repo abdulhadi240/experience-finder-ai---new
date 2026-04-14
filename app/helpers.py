@@ -384,7 +384,7 @@ async def _main_stream(
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ──
             if request.user_id and conversation_id:
-                if response_content.feedback is None:
+                if not response_content.feedback:
                     asyncio.create_task(_redis_history.clear_conversation(
                         request.user_id, conversation_id,
                     ))
@@ -517,7 +517,7 @@ async def _main_stream(
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ────────────────────────────
             if request.user_id and conversation_id:
-                if response_content.feedback is None:
+                if not response_content.feedback:
                     # Plan is complete (no more questions) → clear history in background
                     asyncio.create_task(_redis_history.clear_conversation(
                         request.user_id, conversation_id,
