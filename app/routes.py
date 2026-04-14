@@ -32,7 +32,7 @@ async def unified_chat(request: QueryRequest):
             request.user_id,
             idle_cutoff_seconds=_REDIS_IDLE_CUTOFF,
             ttl_seconds=_REDIS_TTL,
-            explicit_conversation_id=request.threadId or None,
+            explicit_conversation_id=None,
         )
 
         # ── Load conversation history from Redis, fallback to old_interactions ──
