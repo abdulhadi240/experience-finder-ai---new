@@ -28,7 +28,7 @@ import logging
 
 _log = logging.getLogger("app.agent")
 
-_REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "120"))
+_REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "600"))
 _REDIS_MAX      = int(os.getenv("REDIS_OLD_INTERACTIONS_MAX", "30"))
 
 
