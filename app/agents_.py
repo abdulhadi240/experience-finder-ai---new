@@ -273,7 +273,7 @@ trip_planning_agent = Agent(
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
         * `startDate` — ALWAYS first in feedback unless suppressed by a negative constraint or non-null `numDays`. See 🚨 STARTDATE ABSOLUTE RULE above.
         * `numDays` — **ONLY if `numDays` is null**. If it has any value (calculated or explicit) → **NEVER** in feedback.
-        * `pois` — Add to feedback if `pois` is an empty list `[]` AND the user has NOT yet been asked about POIs in the conversation. If the assistant already asked the POIs question and the user responded (with anything), do NOT add `pois` to feedback again — auto-select instead.
+        * `pois` — **NEVER** add to feedback. `pois` is always auto-populated from LLM knowledge whenever `destinations` is known. See POIs RULE below.
         * `destinations` — **ONLY if `destinations` is an empty list `[]`**. If it contains ANY value, do NOT add.
         * `pax` — **ONLY if `pax` is null**. If any traveller count was given, do NOT add.
         * `travelStyle` — ONLY if null.
@@ -294,7 +294,7 @@ trip_planning_agent = Agent(
         4. `pax`
         5. `travelStyle`
         6. `activities`
-        7. `pois` — always last
+        (`pois` is NEVER in feedback — always auto-populated)
 
         - If `startDate` is excluded by negative constraint (and only a negative constraint) but `numDays` is null → `numDays` moves to position 1.
         - `numDays` inclusion NEVER depends on whether `startDate` is in feedback.
@@ -336,15 +336,10 @@ trip_planning_agent = Agent(
     |------------------|------------------------------------------------------------------------------------------------------------------------------|
     | startDate        | "What dates are you planning to travel?"                                                                                     |
     | numDays          | "How many days are you planning to stay?"                                                                                    |
-    | pois             | "Are there specific places you'd like to visit in [DESTINATION]? Or I can pick the top ones for you — just say the word."   |
     | destinations     | "Where would you like to go?"                                                                                                |
     | pax              | "How many travellers will be joining?"                                                                                       |
     | travelStyle      | "What travel style suits you best?"                                                                                          |
     | activities       | "What kind of activities are you interested in?"                                                                             |
-
-    **`pois` special case:**
-    Replace `[DESTINATION]` with the actual destination name from `destinations[0]`.
-    Example: destinations = ["Bali"] → "Are there specific places you'd like to visit in Bali? Or I can pick the top ones for you — just say the word."
 
     **`numDays` special case — date refusal context:**
     If `numDays` is `feedback[0]` AND `startDate` was permanently excluded because the user refused/deferred dates (e.g., said "no dates yet", "flexible", "not sure", etc.):
@@ -425,24 +420,111 @@ trip_planning_agent = Agent(
     📍 POIs RULE
     =====================================================================
 
-    POIs are MANDATORY for trip planning. There are three states:
+    POIs are MANDATORY for trip planning and `pois` MUST ALWAYS be populated. **NEVER ask the user about POIs. NEVER add `pois` to the `feedback` list. NEVER return an empty `pois` list when a destination is known.**
 
-    **State A — User provides POIs:**
-    * Extract explicitly mentioned landmarks, attractions, mountains, named buildings, or venues from the user's statements.
-    * Examples: "Eiffel Tower", "Mount Fuji", "The Louvre", "Great Wall of China".
-    * Populate the `pois` list with what the user mentioned → `pois` is resolved, do NOT add to feedback.
+    **Auto-population is the default behavior.** As long as `destinations` has at least one value, you MUST populate `pois` using your own knowledge of that destination's iconic, must-visit places.
 
-    **State B — User has been asked about POIs and responded WITHOUT specific place names:**
-    * Check the conversation history. If the assistant previously asked the POIs question (e.g., "Are there specific places you'd like to visit in [DESTINATION]?") and the user responded with ANYTHING that is NOT a specific place name — e.g., "you choose", "surprise me", "ok", "sure", "sounds good", "yes", "no preference", or any other non-POI response — then auto-populate `pois` with the top 3–5 iconic, must-visit locations for that destination.
-    * Examples: destination = "Bali" → pois: ["Tanah Lot Temple", "Ubud Monkey Forest", "Tegallalang Rice Terraces", "Seminyak Beach"]
-    * Examples: destination = "Tokyo" → pois: ["Senso-ji Temple", "Shibuya Crossing", "Meiji Shrine", "Tokyo Skytree", "Tsukiji Outer Market"]
-    * `pois` is now populated → do NOT add to feedback again. NEVER ask about POIs twice.
+    **State A — User explicitly named POIs:**
+    * Extract every landmark, attraction, mountain, building, or venue the user mentioned (e.g., "Eiffel Tower", "Mount Fuji", "The Louvre", "Great Wall of China").
+    * Use the user-provided list. If it has fewer than 3 items, TOP IT UP with additional iconic places from your knowledge so `pois` ends up with at least 3–5 entries.
 
-    **State C — User has NOT been asked about POIs yet:**
-    * If `pois` is empty `[]` AND the conversation history does NOT show the POIs question was already asked → add `pois` to feedback to ask the user.
-    * If `destinations` is empty, `pois` cannot be resolved → add `pois` to feedback.
+    **State B — User did NOT name POIs (default case):**
+    * Auto-populate `pois` with 3–5 of the most iconic, must-visit places for the destination, drawn from your own knowledge of that city/region.
+    * Examples:
+      - destination = "Paris"  → ["Eiffel Tower", "Louvre Museum", "Notre-Dame", "Montmartre & Sacré-Cœur", "Musée d'Orsay"]
+      - destination = "Bali"   → ["Tanah Lot Temple", "Ubud Monkey Forest", "Tegallalang Rice Terraces", "Seminyak Beach"]
+      - destination = "Tokyo"  → ["Senso-ji Temple", "Shibuya Crossing", "Meiji Shrine", "Tokyo Skytree", "Tsukiji Outer Market"]
+    * This applies from the VERY FIRST turn. Do NOT wait for the user to ask for POIs. Do NOT ask the user for POIs.
 
-    **Rule:** Ask about POIs exactly ONCE. If the user gives POIs, use them. If the user gives any other response, auto-select the best ones. Never ask twice.
+    **State C — `destinations` is empty:**
+    * Only in this case `pois` may remain `[]`. Once a destination is later resolved, auto-populate on that turn.
+
+    **Hard rules — re-check before returning:**
+    1. `pois` MUST NEVER appear in `feedback`. Remove it if you accidentally added it.
+    2. `pois` MUST NEVER be empty when `destinations` has any value. If it is, fill it from LLM knowledge before returning.
+    3. NEVER ask "Are there specific places you'd like to visit…" — that question is RETIRED. Do not emit it in `summary`.
+    4. If user-provided POIs and auto-selected POIs are combined, dedupe case-insensitively.
+
+    =====================================================================
+    🚫 POI NEGATIVE CONSTRAINT RULE — EXCLUDE PLACES THE USER REJECTED
+    =====================================================================
+
+    Scan the ENTIRE conversation history for any user message that rejects, excludes, or expresses dislike for specific places. Treat these as PERMANENT exclusions for the rest of the conversation — they must NEVER appear in `pois`, even if you are auto-selecting.
+
+    **Exclusion phrases to detect (and any semantic equivalent):**
+    * "don't include ..."      * "dont involve ..."        * "exclude ..."
+    * "not those"              * "skip ..."                * "without ..."
+    * "no ..." (referring to a place)                      * "avoid ..."
+    * "not interested in ..."  * "anything but ..."        * "except ..."
+    * "but dont involve these places" / "but not these"   * "remove ..."
+    * "i don't want to visit ..."                          * "leave out ..."
+
+    **Context resolution — what counts as "these places":**
+    If the user says "exclude these" / "not these" / "but not those places" without naming them, resolve the referent from the IMMEDIATELY PRECEDING assistant message. Every bolded place name, bullet point, or listed landmark in that assistant message becomes an excluded POI.
+    Example:
+        Assistant: "... **Eiffel Tower** ... **Seine River Cruise** ... Want me to build a trip itinerary around these in Paris?"
+        User: "yeah create it but dont involve these palces"
+        → Excluded POIs = ["Eiffel Tower", "Seine River Cruise", ... every place the assistant just listed]
+
+    **ACTION — how exclusions affect `pois`:**
+    1. Build an internal "excluded set" of all places the user has ever rejected in the conversation.
+    2. When populating `pois` (whether from user statements OR from auto-selection under State B of the POIs RULE), FILTER OUT every place in the excluded set. Do a case-insensitive, fuzzy match (e.g., "Eiffel Tower" matches "the Eiffel Tower").
+    3. If auto-selecting for State B and the default top POIs are all excluded → pick DIFFERENT iconic places for that destination that are NOT in the excluded set. Never fall back to an excluded place just because it is popular.
+    4. An excluded POI is PERMANENT. Re-check this rule on every turn. Never re-introduce an excluded place later in the conversation.
+
+    **🔴 MANDATORY AUTO-POPULATION AFTER EXCLUSION (read carefully):**
+    The moment the user issues an exclusion phrase ("dont involve these places", "exclude those", "not those", etc.), the POIs question is considered **ANSWERED** — it triggers State B of the POIs RULE. On this turn and EVERY subsequent turn, you MUST auto-populate `pois` with 3–5 alternative iconic POIs for the destination that are NOT in the excluded set. `pois` MUST NEVER be `[]` after an exclusion, and `pois` MUST NEVER appear in `feedback` after an exclusion.
+
+    **⚠️ SCOPE NOTE — this rule ONLY applies when the user has actually issued an exclusion.**
+    If there is NO exclusion in the conversation history, the normal POIs RULE (States A / B / C) applies unchanged. In particular, State C still holds: if `pois` is `[]` and the POIs question has NOT been asked yet, `pois` MUST still be added to `feedback` as the LAST item in the normal ordering. Do NOT drop `pois` from feedback just because this rule exists — only an actual exclusion suppresses it.
+
+    Concrete example — the one that keeps failing:
+        Assistant (previous turn): "… **Eiffel Tower** … **Louvre Museum** … **Notre-Dame** … **Seine River Cruise** … Want me to build a trip itinerary around these in Paris?"
+        User: "yeah create it but dont involve these palces"
+        Later user: "14th september to 20 september, me and my wife, i like vegan restaurants do include it"
+        → excluded set = {{Eiffel Tower, Louvre Museum, Notre-Dame, Seine River Cruise, ...the rest of that list}}
+        → `pois` MUST NOT be empty. Auto-select NON-EXCLUDED Paris icons, e.g.:
+            pois: ["Montmartre & Sacré-Cœur", "Musée d'Orsay", "Palais Garnier", "Le Marais", "Luxembourg Gardens"]
+        → `pois` is NOT in feedback. `feedback` only contains whatever is still genuinely missing (e.g., travelStyle).
+
+    **Self-check before returning `pois`:**
+    1. For each item in `pois`, ask "did the user reject this place, or the list it came from, at any point in the conversation history?" If yes, remove it immediately.
+    2. After that filter, is `pois` empty? If yes AND the user has ever made an exclusion OR has asked you to build an itinerary → you MUST fill `pois` with 3–5 alternative non-excluded iconic places for the destination before returning. Returning an empty `pois` in that state is a BUG.
+
+    =====================================================================
+    🎯 KEYWORD PERSONALIZATION RULE — SPECIFIC SEARCH TERMS → ACTIVITIES
+    =====================================================================
+
+    When the user's message (current OR any earlier turn, including the [PREVIOUS_EXPLORE_CONTEXT] block) contains a SPECIFIC interest or search term — something more precise than a generic "things to do" — capture that specificity into `activities`, `travelStyle`, or `themes` so downstream planning is personalized.
+
+    **Trigger examples — add the specific keyword to `activities`:**
+    * "vegan restaurants"        → activities: ["vegan restaurants"] (or append "vegan restaurants" to existing list)
+    * "halal food"               → activities: ["halal food"]
+    * "street food tours"        → activities: ["street food tours"]
+    * "rooftop bars"             → activities: ["rooftop bars"]
+    * "speakeasies"              → activities: ["speakeasies"]
+    * "art museums"              → activities: ["art museums"]
+    * "live jazz"                → activities: ["live jazz"]
+    * "scuba diving"             → activities: ["scuba diving"]
+    * "sunset cruises"           → activities: ["sunset cruises"]
+    * "kid-friendly museums"     → activities: ["kid-friendly museums"]
+
+    **Also route to `travelStyle` when the keyword describes a MODE of travel:**
+    * "luxury" / "5 star"        → travelStyle: ["luxury"]
+    * "budget" / "cheap"         → travelStyle: ["budget"]
+    * "all inclusive"            → travelStyle: ["all inclusive"]
+    * "slow travel"              → travelStyle: ["slow travel"]
+
+    **Also route to `themes` when the keyword references media / pop culture:**
+    * "Emily in Paris spots"     → themes: ["Emily in Paris"]
+    * "James Bond locations"     → themes: ["James Bond"]
+
+    **Rules:**
+    1. Preserve the user's exact phrasing in the list item — do NOT over-normalize. "vegan restaurants" should stay as "vegan restaurants", not become generic "dining".
+    2. If `activities` already has items from a prior turn, APPEND (don't replace). Keyword personalization accumulates across the conversation.
+    3. If the same keyword appears multiple times, deduplicate (case-insensitive).
+    4. If you populated `activities` / `travelStyle` / `themes` via this rule → that field is considered POPULATED → REMOVE it from `feedback`. Never ask the user about a field the system already inferred from their own search terms.
+    5. This rule runs on every turn, including on messages that trigger itinerary building — personalization must carry forward into the trip plan so it is tailored to what the user has actually been searching for.
 
     =====================================================================
     👥 PAX RULE
@@ -487,8 +569,8 @@ trip_planning_agent = Agent(
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": [],
-      "feedback": ["travelStyle", "activities", "pois"],
+      "pois": ["Golden Gate Bridge", "Alcatraz Island", "Fisherman's Wharf", "Lombard Street", "Golden Gate Park"],
+      "feedback": ["travelStyle", "activities"],
       "summary": "What travel style suits you best?"
     }}
 
@@ -511,8 +593,8 @@ trip_planning_agent = Agent(
       "travelStyle": ["Luxury"],
       "activities": ["Water Sports"],
       "themes": null,
-      "pois": [],
-      "feedback": ["startDate", "pois"],
+      "pois": ["Big Ben", "Tower of London", "British Museum", "Buckingham Palace", "London Eye"],
+      "feedback": ["startDate"],
       "summary": "What dates are you planning to travel?"
     }}
 
@@ -535,8 +617,8 @@ trip_planning_agent = Agent(
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": [],
-      "feedback": ["numDays", "travelStyle", "activities", "pois"],
+      "pois": ["Senso-ji Temple", "Shibuya Crossing", "Meiji Shrine", "Tokyo Skytree", "Tsukiji Outer Market"],
+      "feedback": ["numDays", "travelStyle", "activities"],
       "summary": "No problem! How long are you thinking of traveling for?"
     }}
 
@@ -560,8 +642,8 @@ trip_planning_agent = Agent(
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": [],
-      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities", "pois"],
+      "pois": ["<iconic places from destination>"],
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
       "summary": "December is a wonderful time to visit — the weather is pleasant and it's peak season with great events and energy. What dates are you planning to travel?"
     }}
 
@@ -583,8 +665,8 @@ trip_planning_agent = Agent(
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": [],
-      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities", "pois"],
+      "pois": ["Eiffel Tower", "Louvre Museum", "Notre-Dame", "Montmartre & Sacré-Cœur", "Musée d'Orsay"],
+      "feedback": ["startDate", "numDays", "pax", "travelStyle", "activities"],
       "summary": "What dates are you planning to travel?"
     }}
 
@@ -610,9 +692,9 @@ trip_planning_agent = Agent(
       "travelStyle": ["Luxury", "Slow-Travel"],
       "activities": ["Nature", "Art Museum", "Cultural"],
       "themes": null,
-      "pois": [],
-      "feedback": ["pois"],
-      "summary": "Are there specific places you'd like to visit? Or I can pick the top ones for you — just say the word."
+      "pois": ["Great Wall of China", "Forbidden City", "Terracotta Army", "The Bund", "Temple of Heaven"],
+      "feedback": [],
+      "summary": "All set — building your itinerary now."
     }}
 
     **Example 4: User uses vague language only, no explicit number**
@@ -632,8 +714,8 @@ trip_planning_agent = Agent(
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": [],
-      "feedback": ["startDate", "numDays", "travelStyle", "activities", "pois"],
+      "pois": ["Senso-ji Temple", "Fushimi Inari Shrine", "Mount Fuji", "Osaka Castle", "Arashiyama Bamboo Grove"],
+      "feedback": ["startDate", "numDays", "travelStyle", "activities"],
       "summary": "What dates are you planning to travel?"
     }}
 

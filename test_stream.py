@@ -63,17 +63,9 @@ def stream_chat_response():
                 elif "travel" in data:
                     trip_plan   = data["travel"][0]
                     timing_info = data["travel"][1]
-                    print(f"\n[TRIP PLAN]")
-                    print(f"  destinations : {trip_plan.get('destinations')}")
-                    print(f"  numDays      : {trip_plan.get('numDays')}")
-                    print(f"  startDate    : {trip_plan.get('startDate')}")
-                    print(f"  month        : {trip_plan.get('month')}")
-                    print(f"  pax          : {trip_plan.get('pax')}")
-                    print(f"  travelStyle  : {trip_plan.get('travelStyle')}")
-                    print(f"  activities   : {trip_plan.get('activities')}")
-                    print(f"  feedback     : {trip_plan.get('feedback')}")
-                    print(f"  summary      : {trip_plan.get('summary')}")
-                    print(f"  total_time   : {timing_info.get('total_time')}")
+                    print(f"\n[TRIP PLAN — FULL RAW RESPONSE]")
+                    print(json.dumps(trip_plan, indent=2, ensure_ascii=False))
+                    print(f"[TIMING] {json.dumps(timing_info, indent=2)}")
 
                 # ── Error ─────────────────────────────────────────────
                 elif "error" in data:
