@@ -89,10 +89,10 @@ async def get_place_details(place_id: str, api_key: str) -> Dict[str, Any]:
     details_url = "https://maps.googleapis.com/maps/api/place/details/json"
     params = {
         "place_id": place_id,
-        "fields": "photos,rating,user_ratings_total,opening_hours",
+        "fields": "photos,rating,user_ratings_total,opening_hours,business_status,types",
         "key": api_key,
     }
-    result: Dict[str, Any] = {"photo_url": None, "rating": None, "num_reviews": None, "hours": None}
+    result: Dict[str, Any] = {"photo_url": None, "rating": None, "num_reviews": None, "hours": None, "business_status": None, "types": []}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(details_url, params=params)
@@ -132,6 +132,12 @@ async def get_place_details(place_id: str, api_key: str) -> Dict[str, Any]:
                             hours_dict[day] = times
                     if hours_dict:
                         result["hours"] = hours_dict
+
+                # Business status (OPERATIONAL, CLOSED_TEMPORARILY, CLOSED_PERMANENTLY)
+                result["business_status"] = place.get("business_status")
+
+                # Place types from Google
+                result["types"] = place.get("types", [])
 
             else:
                 pass
@@ -532,6 +538,18 @@ async def process_query_research(
                     if specific_maps and specific_maps.get("place_id"):
                         place_maps_data = specific_maps
                         place_details = await get_place_details(specific_maps["place_id"], api_key)
+
+                        # Skip closed businesses
+                        biz_status = place_details.get("business_status")
+                        if biz_status in ("CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"):
+                            continue
+
+                        # Skip hotels — we use a third-party API for hotel data
+                        place_types = place_details.get("types", [])
+                        _HOTEL_TYPES = {"lodging", "hotel", "motel", "hostel", "resort_hotel", "extended_stay_hotel"}
+                        if _HOTEL_TYPES & set(place_types):
+                            continue
+
                         place_image = place_details["photo_url"]
                         # Update lat/lng from specific place
                         geom = specific_maps.get("geometry", {}).get("location", {})
@@ -552,6 +570,11 @@ async def process_query_research(
                             meta["hours"] = place_details["hours"]
                     else:
                         pass
+
+                # Skip if the assigned category is hotel-related
+                cat_lower = formatted_data.get("category", "").lower()
+                if any(h in cat_lower for h in ("hotel", "hostel", "motel", "lodging", "resort")):
+                    continue
 
                 # ============================================
                 # SCORE-BASED ROUTING

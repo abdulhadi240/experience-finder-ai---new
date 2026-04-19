@@ -122,7 +122,15 @@ INSTRUCTIONS:
 4. Extract latitude and longitude from maps_data geometry location as strings
 5. Set language to "en"
 6. Generate a unique id using the place_id from maps_data or create a descriptive one
-7. Determine category based on the research content (e.g., "Restaurant", "Attraction", "Hip Place", "Nature & Parks", "Food & Dining")
+7. Determine category using STRICT rules — pick the MOST SPECIFIC match:
+   - If the place serves food/drinks (restaurant, café, bar, bakery, food stall, diner, bistro, pub, brewery, pizzeria): category = "Restaurant"
+   - If it is a nature spot (park, beach, garden, trail, mountain, lake, waterfall, forest, nature reserve): category = "Nature & Parks"
+   - If it is a museum, gallery, historic site, monument, or cultural center: category = "Museum & Culture"
+   - If it is a shopping destination (mall, market, bazaar, souk): category = "Shopping"
+   - If it is nightlife (nightclub, lounge, comedy club): category = "Nightlife"
+   - If it is an adventure/sport activity (diving, skydiving, rafting, zip-line, surfing): category = "Adventure"
+   - For anything else (landmarks, viewpoints, entertainment venues, unique experiences): category = "Attraction"
+   NEVER use generic labels like "Place", "Hip Place", "Food & Dining", or "Landmark". Always use one of the specific categories above.
 8. Use the first citation as source
 9. TITLE RULE - CRITICAL: Use ONLY the exact proper name of the specific place as the title.
    - CORRECT examples: "Gary Danko", "Mall of America", "Eiffel Tower", "Nobu Miami"
@@ -158,7 +166,7 @@ Return ONLY a valid JSON object with a "results" array like this:
       "latitude": "string",
       "language": "en",
       "id": "string",
-      "category": "string",
+      "category": "string (MUST be one of: Restaurant, Nature & Parks, Museum & Culture, Shopping, Nightlife, Adventure, Attraction)",
       "source": "string (URL)",
       "title": "string",
       "content": "string",
