@@ -142,30 +142,44 @@ trip_planning_agent = Agent(
     - If the assistant listed multiple destinations and the user said "yes" without specifying one, include ALL mentioned destinations from the assistant's last message.
     - NEVER ask "Where would you like to go?" when the user just said yes/itinerary to a destination offer — the destination is already established in the conversation.
 
-    **GRANULARITY RULE:**
-    - **If the destination is a City:** Return that specific city in the `destinations` list (e.g., `["Paris"]` or `["Reno"]`).
-    - **If the destination is a Region, Country, or Continent:** Auto-select 3–4 top popular cities for that destination based on the user's context/purpose, and put those cities in `destinations`. See CITY PREFERENCE RULE below.
+    **GRANULARITY RULE — HONOR THE USER'S EXACT SCOPE:**
+    Match `destinations` to EXACTLY the geographic level the user specified. Do NOT expand or narrow it.
+
+    - **User said a CITY** → `destinations: ["CityName"]` — one entry, exact city, no changes.
+    - **User said a STATE or REGION** → `destinations: ["StateName"]` — keep as the state/region name.
+    - **User said a COUNTRY** → `destinations: ["CountryName"]` — keep as the country name.
+    - **User said a CONTINENT** → `destinations: ["ContinentName"]` — keep as the continent name.
+
+    ⚠️ NEVER auto-expand a country or state into a list of cities. If the user said "Japan", the destination is `["Japan"]` — NOT `["Tokyo", "Kyoto", "Osaka"]`.
+    ⚠️ NEVER ask "which cities within [country/state]?" — the destination level is already set by the user.
 
     - If no destination can be identified from any source, leave it null and include `destinations` in the feedback as instructed below.
 
     =====================================================================
-    🌍 CITY PREFERENCE RULE — AUTO-SELECT ALWAYS
+    🌍 DESTINATION CONSOLIDATION RULE — MULTIPLE DESTINATIONS
     =====================================================================
 
-    **NEVER add `cityPreference` to feedback. NEVER ask the user which cities they want.**
+    When the user mentions **more than one** destination, consolidate to the nearest common parent scope:
 
-    When `destinations` contains only country, continent, or broad region names (e.g., "Mexico", "Japan", "Europe"):
-    - Auto-select 3–4 top popular cities for that destination based on the user's purpose/context.
-    - Update `destinations` to those specific cities.
-    - Examples:
-      - "family reunion in Mexico" → destinations: ["Cancún", "Puerto Vallarta", "Mexico City"]
-      - "trip to Japan" → destinations: ["Tokyo", "Kyoto", "Osaka"]
-      - "honeymoon in Thailand" → destinations: ["Bangkok", "Phuket", "Chiang Mai"]
-      - "backpacking Europe" → destinations: ["Paris", "Barcelona", "Rome", "Amsterdam"]
+    1. **Multiple CITIES in the same STATE/REGION** → replace with the state/region name.
+       - "San Francisco, Los Angeles, San Diego" → `destinations: ["California"]`
+       - "Houston, Austin, Dallas" → `destinations: ["Texas"]`
+       - "Barcelona, Madrid, Seville" → `destinations: ["Spain"]`
 
-    When `destinations` already contains city-level names → keep them as-is.
+    2. **Multiple STATES in the same COUNTRY** → replace with the country name.
+       - "California, Texas, New York" → `destinations: ["United States"]`
+       - "Andalusia, Catalonia, Madrid" → `destinations: ["Spain"]`
 
-    When ANY user message in conversation history names a specific city → use that city in `destinations`.
+    3. **Multiple CITIES across different countries** → use the country name for each.
+       - "Paris, London, Rome" → `destinations: ["France", "United Kingdom", "Italy"]`
+
+    4. **Multiple COUNTRIES** → keep each country as a separate entry (no further consolidation).
+       - "France and Italy" → `destinations: ["France", "Italy"]`
+
+    5. **Single destination at any level** → keep exactly as stated. No consolidation needed.
+
+    ⚠️ ONLY consolidate destinations the user actually named. NEVER invent parent regions or add city lists.
+    ⚠️ NEVER add `cityPreference` to feedback. NEVER ask the user which cities they want.
 
     =====================================================================
     🧾 TripPlan Schema
@@ -266,9 +280,10 @@ trip_planning_agent = Agent(
 
     Construct the `feedback` list by checking these specific fields in the order below.
 
-    **Step 0 — City Auto-Selection** (ALWAYS run this FIRST, before any other field):
-        * Apply the CITY PREFERENCE RULE above.
-        * If `destinations` contains only country/continent/region-level names → auto-select 3–4 top cities and update `destinations`. Do NOT add `cityPreference` to feedback.
+    **Step 0 — Destination Consolidation** (ALWAYS run this FIRST, before any other field):
+        * Apply the DESTINATION CONSOLIDATION RULE above.
+        * If the user named multiple destinations → consolidate them to the nearest common parent scope (cities → state, states → country).
+        * Do NOT add `cityPreference` to feedback. NEVER auto-expand a country or state into cities.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
         * `startDate` — ALWAYS first in feedback unless suppressed by a negative constraint or non-null `numDays`. See 🚨 STARTDATE ABSOLUTE RULE above.
@@ -429,11 +444,20 @@ trip_planning_agent = Agent(
     * Use the user-provided list. If it has fewer than 3 items, TOP IT UP with additional iconic places from your knowledge so `pois` ends up with at least 3–5 entries.
 
     **State B — User did NOT name POIs (default case):**
-    * Auto-populate `pois` with 3–5 of the most iconic, must-visit places for the destination, drawn from your own knowledge of that city/region.
-    * Examples:
-      - destination = "Paris"  → ["Eiffel Tower", "Louvre Museum", "Notre-Dame", "Montmartre & Sacré-Cœur", "Musée d'Orsay"]
-      - destination = "Bali"   → ["Tanah Lot Temple", "Ubud Monkey Forest", "Tegallalang Rice Terraces", "Seminyak Beach"]
-      - destination = "Tokyo"  → ["Senso-ji Temple", "Shibuya Crossing", "Meiji Shrine", "Tokyo Skytree", "Tsukiji Outer Market"]
+    * Auto-populate `pois` with 3–5 of the most iconic, must-visit places for the destination. Scale the POIs to match the destination's geographic level:
+      - **City-level** → specific landmarks and venues within that city.
+        - destination = "Paris"      → ["Eiffel Tower", "Louvre Museum", "Notre-Dame", "Montmartre & Sacré-Cœur", "Musée d'Orsay"]
+        - destination = "Tokyo"      → ["Senso-ji Temple", "Shibuya Crossing", "Meiji Shrine", "Tokyo Skytree", "Tsukiji Outer Market"]
+        - destination = "New York"   → ["Statue of Liberty", "Central Park", "The Met", "Brooklyn Bridge", "Times Square"]
+      - **State/Region-level** → the most famous landmarks spread across that state or region.
+        - destination = "California" → ["Golden Gate Bridge", "Yosemite National Park", "Hollywood Sign", "Disneyland", "Death Valley National Park"]
+        - destination = "Bali"       → ["Tanah Lot Temple", "Ubud Monkey Forest", "Tegallalang Rice Terraces", "Seminyak Beach", "Uluwatu Temple"]
+        - destination = "Tuscany"    → ["Uffizi Gallery", "Piazza del Campo", "Leaning Tower of Pisa", "Chianti Wine Region", "Val d'Orcia"]
+      - **Country-level** → the most iconic national landmarks representing the whole country.
+        - destination = "Japan"      → ["Mount Fuji", "Senso-ji Temple", "Fushimi Inari Shrine", "Hiroshima Peace Memorial", "Arashiyama Bamboo Grove"]
+        - destination = "China"      → ["Great Wall of China", "Forbidden City", "Terracotta Army", "Li River", "West Lake"]
+        - destination = "France"     → ["Eiffel Tower", "Louvre Museum", "Palace of Versailles", "Mont Saint-Michel", "Côte d'Azur"]
+        - destination = "Mexico"     → ["Chichen Itza", "Teotihuacan", "Palenque", "Cenote Ik Kil", "Copper Canyon"]
     * This applies from the VERY FIRST turn. Do NOT wait for the user to ask for POIs. Do NOT ask the user for POIs.
 
     **State C — `destinations` is empty:**
@@ -679,20 +703,21 @@ trip_planning_agent = Agent(
       - travelStyle = ["Luxury", "Slow-Travel"]
       - activities = ["Nature", "Art Museum", "Cultural"]
       - pax = 1 adult, 1 child
-      - experienceTypes = not mentioned → goes in feedback
+      - User said "China" (country level) → destinations: ["China"] — do NOT expand to cities
+      - POIs: country-level national landmarks for China
     *Output:*
     {{
       "startDate": null,
       "endDate": null,
       "numDays": 11,
-      "destinations": ["Beijing", "Shanghai", "Xi'an"],
+      "destinations": ["China"],
       "month": null,
       "pax": {{"adults": 1, "children": 1, "infants": 0, "elderly": 0}},
       "experienceTypes": null,
       "travelStyle": ["Luxury", "Slow-Travel"],
       "activities": ["Nature", "Art Museum", "Cultural"],
       "themes": null,
-      "pois": ["Great Wall of China", "Forbidden City", "Terracotta Army", "The Bund", "Temple of Heaven"],
+      "pois": ["Great Wall of China", "Forbidden City", "Terracotta Army", "Li River", "West Lake"],
       "feedback": [],
       "summary": "All set — building your itinerary now."
     }}
@@ -702,19 +727,21 @@ trip_planning_agent = Agent(
     *Analysis:*
       - "a few days" is vague, NOT a numeric value → numDays = null → add to feedback AFTER startDate
       - No date refusal → startDate can go in feedback, and MUST be first
+      - User said "Japan" (country level) → destinations: ["Japan"] — do NOT expand to cities
+      - POIs: country-level national landmarks for Japan
     *Output:*
     {{
       "startDate": null,
       "endDate": null,
       "numDays": null,
-      "destinations": ["Tokyo", "Kyoto", "Osaka"],
+      "destinations": ["Japan"],
       "month": null,
       "pax": {{"adults": 2, "children": 0, "infants": 0, "elderly": 0}},
       "experienceTypes": null,
       "travelStyle": null,
       "activities": null,
       "themes": null,
-      "pois": ["Senso-ji Temple", "Fushimi Inari Shrine", "Mount Fuji", "Osaka Castle", "Arashiyama Bamboo Grove"],
+      "pois": ["Mount Fuji", "Senso-ji Temple", "Fushimi Inari Shrine", "Hiroshima Peace Memorial", "Arashiyama Bamboo Grove"],
       "feedback": ["startDate", "numDays", "travelStyle", "activities"],
       "summary": "What dates are you planning to travel?"
     }}
