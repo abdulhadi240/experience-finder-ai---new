@@ -755,7 +755,7 @@ trip_planning_agent = Agent(
     * Every field in the schema must be present in the output.
     """,
 
-    model="gpt-5.4",
+    model="gpt-5.4-mini",
     output_type=TripPlan,
     handoff_description="Extracts trip plans. Handles date refusals and day ranges intelligently."
 )
@@ -973,7 +973,7 @@ Examples:
 Today's date is {{{{today}}}}
 """,
     output_type=global_input_guardrail,
-    model="gpt-5.4",
+    model="gpt-5.4-mini",
 )
 
 explore_travel_agent = Agent(
@@ -1219,7 +1219,7 @@ NEVER ask "are you looking for a day-by-day itinerary or just recommendations?" 
 
 Today's date is {today}
 """,
-    model="gpt-4o",
+    model="gpt-5.4-mini",
     output_type=Output_Format,
 )
 
@@ -1304,7 +1304,7 @@ You MUST use web search to find accurate, up-to-date information. Do NOT answer 
 
 Today's date is {today}
 """,
-    model="gpt-4o",
+    model="gpt-5.4-mini",
     output_type=Output_Format,
     tools=[WebSearchTool(search_context_size="low")]
 )
