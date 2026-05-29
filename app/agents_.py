@@ -880,8 +880,13 @@ If the conversation history shows the user previously expressed planning intent 
 
 When the user is in an active planning flow:
 - A destination name ("tokyo", "japan", "bali") = continuing the plan → isTravelRelated = true
-- A planning word ("itinerary", "plan it", "yes", "sure") = confirming the plan → isTravelRelated = true
+- An explicit planning word ("itinerary", "plan it", "build it", "make it", "let's go") = confirming the plan → isTravelRelated = true
 - A short answer to a planning question (city name, date, number of days) = providing details for the plan → isTravelRelated = true
+
+**⚠️ SHORT AFFIRMATIVE RULE — READ CAREFULLY:**
+Short affirmatives ("yes", "yeah", "sure", "ok", "okay", "go ahead", "sounds good") only set isTravelRelated = true if the IMMEDIATELY PRECEDING assistant message contained an explicit itinerary offer — i.e., it included the phrase "build a trip itinerary", "build a full itinerary", or "Want me to build".
+
+If the immediately preceding assistant message asked a follow-up or filtering question (e.g., "Want me to narrow this down?", "Which city do you prefer?", "How many days?", "Are you traveling solo?", "Want me to filter by budget?") — a short affirmative ("yeah", "yes", "sure") is the user answering THAT question, NOT accepting an itinerary offer. Set isTravelRelated = false and treat it as continuing the explore/recommendation flow.
 
 Examples where intent = build the plan:
 - "Plan a 7-day trip to Morocco" ✅ — destination fixed, wants the plan generated
@@ -891,6 +896,11 @@ Examples where intent = build the plan:
 - The AI asked "Want me to build a trip itinerary around these in Tokyo?" and the user replied "itinerary" ✅ — single-word planning trigger, destination already established
 - User previously said "I want to plan a trip in July" → then said "asia" → then said "japan" → then said "tokyo" ✅ — progressive narrowing within an active planning flow, isTravelRelated = true for ALL of these messages
 - User previously said "I want to plan a trip" → then said "itinerary" ✅ — planning intent was established earlier, current message confirms it
+
+Examples where a short affirmative does NOT trigger planning:
+- The AI asked "Want me to narrow this down by best in June or best for families?" → User says "yeah" ❌ — user is asking to filter/narrow recommendations, NOT requesting an itinerary → isTravelRelated = false
+- The AI asked "Are you traveling solo or with family?" → User says "yes" ❌ — answering a follow-up question → isTravelRelated = false
+- The AI asked "Want me to show more options?" → User says "sure" ❌ — requesting more recommendations → isTravelRelated = false
 
 **isTravelRelated = false** — The user is NOT ready to generate an itinerary. They are still in the discovery/research/decision phase. The distinction is about **readiness**, not keywords:
 
