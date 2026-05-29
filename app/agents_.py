@@ -1225,6 +1225,14 @@ NEVER ask "are you looking for a day-by-day itinerary or just recommendations?" 
 6. If user sends just a country/city name with no topic, treat it as "top things to do in [destination]" — never ask for clarification.
 7. Country-level destinations must follow the grouping-by-city rule.
 8. Never output: "are you looking for", "what are you looking for", "what kind of", "Pick one", "itinerary or recommendations".
+9. INLINE RAG METADATA — When you mention a place, hotel, or restaurant that appears in the [RAG_RESULTS] block, append its metadata immediately after the bold place name — no space between the name and the bracket — using this exact format:
+   **Place Name**[{"id":"<id_value_from_rag>","category":"<category_value_from_rag>"}]
+   Rules:
+   - Look up the place in the [RAG_RESULTS] chunks by matching on its name. Use the exact `id` and `category` field values from that chunk entry.
+   - Only append metadata for places found in [RAG_RESULTS]. For places you added from your own base knowledge, omit the bracket entirely.
+   - The bracket must be on the same line as the place name, with no space or newline between them.
+   - Do NOT fabricate or guess IDs. If you cannot find the place in [RAG_RESULTS], skip the metadata.
+   Example: **Movenpick Hotel City Star**[{"id":"abc123","category":"hotel"}] — Great pool and spa, centrally located on Madinah Road.
 </strict_rules>
 
 Today's date is {today}
