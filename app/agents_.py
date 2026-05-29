@@ -755,7 +755,7 @@ trip_planning_agent = Agent(
     * Every field in the schema must be present in the output.
     """,
 
-    model="gpt-5.4-mini",
+    model="gpt-5.4",
     output_type=TripPlan,
     handoff_description="Extracts trip plans. Handles date refusals and day ranges intelligently."
 )
@@ -1219,7 +1219,7 @@ NEVER ask "are you looking for a day-by-day itinerary or just recommendations?" 
 
 Today's date is {today}
 """,
-    model="gpt-5.4-mini",
+    model="gpt-5.4",
     output_type=Output_Format,
 )
 
