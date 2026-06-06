@@ -21,7 +21,7 @@ from .services import (
     get_instant_loading_message,
 )
 from .agents_ import validation_agent
-from .memory import setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
+from .memory import setup_user_session, add_message, get_user_memory_for_engage
 from .region_metadata import REGION_METADATA
 from . import redis_history as _redis_history
 import os
@@ -348,17 +348,6 @@ async def _main_stream(
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
 
-    # ── Instant location scope gate (pure Python, no LLM, no I/O) ──
-    scope_error = _check_location_scope(request.message, request.reference)
-    if scope_error:
-        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
-        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
-        for i, word in enumerate(scope_error.split()):
-            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
-        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
-        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'scope_gate'})}\n\n"
-        return
-
     # ── Save user question to Zep — always, non-blocking, never gates anything ──
     if request.user_id:
         async def _save_to_zep():
@@ -394,9 +383,11 @@ async def _main_stream(
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
 
-    # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, Zep all in parallel ──
+    # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, scope, Zep all in parallel ──
+    # scope gate runs in a thread so pycountry I/O never blocks the event loop
+    scope_task    = asyncio.create_task(asyncio.to_thread(_check_location_scope, request.message, request.reference))
     pii_task      = asyncio.create_task(check_pii_fast(request.message))
-    loading_task  = asyncio.create_task(generate_loading_statements(request.message, param))
+    loading_task  = asyncio.create_task(generate_loading_statements(final_message, param))
 
     async def _summarize_then_rag() -> Dict[str, Any]:
         query = await summarize_for_rag(final_message)
@@ -404,7 +395,6 @@ async def _main_stream(
 
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
-    zep_prefs_task  = asyncio.create_task(asyncio.to_thread(get_user_preferences, request.user_id)) if request.user_id else None
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
@@ -463,6 +453,19 @@ async def _main_stream(
                 yield f"data: {json.dumps({'loading': _msg})}\n\n"
             _loader_index += 1
 
+    # ── Scope gate (resolved by now — fired at t=0 in a thread) ─────
+    try:
+        scope_error = scope_task.result() if scope_task.done() else await scope_task
+    except Exception:
+        scope_error = None
+    if scope_error:
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+        for i, word in enumerate(scope_error.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param, 'response_type': 'scope_gate'})}\n\n"
+        return
+
     # ── PII check (resolved by now — fired at t=0 in parallel) ───────
     try:
         pii_detected = pii_task.result() if pii_task.done() else await pii_task
@@ -508,7 +511,6 @@ async def _main_stream(
         solution = validation_result.final_output.solution
         if len(solution) < 50:
             solution = "Let's keep it travel-focused. What would you like to explore next?"
-        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(solution.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
@@ -535,14 +537,6 @@ async def _main_stream(
             )
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
-
-    # ── Await Zep prefs (in-flight since t=0, inject into agent context) ──────
-    zep_prefs = None
-    if zep_prefs_task:
-        try:
-            zep_prefs = await zep_prefs_task
-        except Exception:
-            zep_prefs = None
 
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     if validation_result.final_output.isTravelRelated:
@@ -593,9 +587,6 @@ async def _main_stream(
             f"FULL DATA:\n{json.dumps(rag_data)}\n"
             f"[/RAG_RESULTS]"
         )
-
-    if zep_prefs:
-        final_message_with_ref += f"\n\n[USER_PREFERENCES]\n{zep_prefs}\n[/USER_PREFERENCES]"
 
     # Loading context: agent opens in sync with the last loader the user saw
     _loaders_block = "\n".join(f"- {m}" for m in _shown_loaders)

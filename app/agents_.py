@@ -910,6 +910,8 @@ Short affirmatives ("yes", "yeah", "sure", "ok", "okay", "go ahead", "sounds goo
 
 If the immediately preceding assistant message asked a follow-up or filtering question (e.g., "Want me to narrow this down?", "Which city do you prefer?", "How many days?", "Are you traveling solo?", "Want me to filter by budget?") — a short affirmative ("yeah", "yes", "sure") is the user answering THAT question, NOT accepting an itinerary offer. Set isTravelRelated = false and treat it as continuing the explore/recommendation flow.
 
+**⚠️ DESTINATION SELECTION QUESTION EXCEPTION:** If the preceding assistant message asked the user to CHOOSE or NAME a destination from a list (e.g., "Which of these destinations would you like me to build an itinerary around?", "Which from that list is calling your name?", "Any of these jumping out?", "Which destination would you like to focus on?") — a short affirmative ("yes", "yeah", "sure") means the user wants to continue but HAS NOT named a specific destination yet. Set isTravelRelated = false. The solution should ask: "Which destination from that list would you like to go with?" (vary phrasing each time).
+
 Examples where intent = build the plan:
 - "Plan a 7-day trip to Morocco" ✅ — destination fixed, wants the plan generated
 - "We're going to Paris in June, build us an itinerary" ✅ — destination fixed, wants output
