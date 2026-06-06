@@ -12,9 +12,8 @@ from . import redis_history
 
 router = APIRouter()
 
-_REDIS_TTL          = int(os.getenv("REDIS_TTL_SECONDS", "600"))
-_REDIS_IDLE_CUTOFF  = int(os.getenv("REDIS_IDLE_CUTOFF_SECONDS", "600"))
-_REDIS_CTX_LIMIT    = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "20"))
+_REDIS_TTL       = int(os.getenv("REDIS_TTL_SECONDS", "600"))
+_REDIS_CTX_LIMIT = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "20"))
 
 
 # ─── Main Chat Route ──────────────────────────────────────────────
@@ -22,25 +21,14 @@ _REDIS_CTX_LIMIT    = int(os.getenv("REDIS_OLD_INTERACTIONS_LIMIT", "20"))
 @router.post("/chat")
 async def unified_chat(request: QueryRequest):
     try:
-        thread_id = uuid.uuid4().hex
+        # Reuse the thread_id the frontend sends, or create a new one for a new conversation
+        thread_id = request.threadId or uuid.uuid4().hex
         param     = request.param
 
-        # ── Resolve Redis conversation ID ─────────────────────────
-        # Uses request.threadId when the frontend tracks the session,
-        # otherwise falls back to idle-cutoff logic in redis_history.
-        conversation_id = await redis_history.get_or_create_conversation_id(
-            request.user_id,
-            idle_cutoff_seconds=_REDIS_IDLE_CUTOFF,
-            ttl_seconds=_REDIS_TTL,
-            explicit_conversation_id=None,
+        # ── Load conversation history from Redis keyed by thread_id ──
+        history: list[dict] = await redis_history.fetch_recent_interactions(
+            thread_id, limit=_REDIS_CTX_LIMIT
         )
-
-        # ── Load conversation history from Redis, fallback to old_interactions ──
-        history: list[dict] = []
-        if conversation_id:
-            history = await redis_history.fetch_recent_interactions(
-                request.user_id, conversation_id, limit=_REDIS_CTX_LIMIT
-            )
 
         # Fallback: if Redis returned nothing, use old_interactions from frontend
         if not history and request.old_interactions:
@@ -52,7 +40,7 @@ async def unified_chat(request: QueryRequest):
         final_message = build_conversation_context(request, history)
 
         return StreamingResponse(
-            _main_stream(request, thread_id, param, final_message, conversation_id=conversation_id, history=history),
+            _main_stream(request, thread_id, param, final_message, history=history),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

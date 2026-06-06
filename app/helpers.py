@@ -15,9 +15,10 @@ from .services import (
     _openai_client,
     get_complete_response,
     stream_agent_to_queue,
-    stream_starter_to_queue,
     summarize_for_rag,
     check_pii_fast,
+    generate_loading_statements,
+    get_instant_loading_message,
 )
 from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage, get_user_preferences
@@ -178,16 +179,12 @@ def _extract_explore_context(history: list[dict] | None) -> tuple[str, list[str]
     last = history[-1]
 
     # ── Extract place names ───────────────────────────────────────
-    # Prefer $$$$$ metadata block (RAG) — "name" values are authoritative
     pois: list[str] = []
     answer = last.get("answer", "")
-    if "$$$$$" in answer:
-        parts = answer.split("$$$$$")
-        if len(parts) >= 2:
-            metadata_block = parts[1]
-            pois = re.findall(r'"name"\s*:\s*"([^"]+)"', metadata_block)
+    # Parse <title> tags from XML POI format
+    pois = re.findall(r'<title>([^<]+)</title>', answer)
     if not pois:
-        # web_search_agent — no metadata block, extract **Bold Place Names** from text
+        # Fallback: extract **Bold Place Names** from web search text
         pois = re.findall(r'\*\*([^*]+)\*\*', answer)
 
     # ── Build context string for activity hint only ───────────────
@@ -344,7 +341,6 @@ async def _main_stream(
     thread_id: str,
     param: str,
     final_message: str,
-    conversation_id: Optional[str] = None,
     history: list[dict] | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
@@ -373,7 +369,9 @@ async def _main_stream(
                 pass
         asyncio.create_task(_save_to_zep())
 
-    # ── Fast-path: plan queries skip all middleware ───────────────
+    # ── Fast-path: plan=True skips ALL middleware ────────────────
+    # No PII check, no RAG, no validation, no loaders, no streaming.
+    # Returns the trip plan JSON directly and exits.
     if request.plan:
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
@@ -383,29 +381,23 @@ async def _main_stream(
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ──
-            if request.user_id and conversation_id:
-                if not response_content.feedback:
-                    asyncio.create_task(_redis_history.clear_conversation(
-                        request.user_id, conversation_id,
-                    ))
-                elif response_content.summary:
-                    asyncio.create_task(_redis_history.append_interaction(
-                        request.user_id, conversation_id,
-                        question=request.message,
-                        answer=json.dumps(jsonable_encoder(response_content)),
-                        max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
-                    ))
+            if not response_content.feedback:
+                asyncio.create_task(_redis_history.clear_conversation(thread_id))
+            elif response_content.summary:
+                asyncio.create_task(_redis_history.append_interaction(
+                    thread_id,
+                    question=request.message,
+                    answer=json.dumps(jsonable_encoder(response_content)),
+                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
 
-    # ── Fire starter + light PII check simultaneously ────────────
-    starter_queue = asyncio.Queue()
-    asyncio.create_task(stream_starter_to_queue(final_message, param, starter_queue))
-    pii_task = asyncio.create_task(check_pii_fast(request.message))
-    await asyncio.sleep(0)   # yield once so both HTTP calls go in-flight immediately
+    # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, Zep all in parallel ──
+    pii_task      = asyncio.create_task(check_pii_fast(request.message))
+    loading_task  = asyncio.create_task(generate_loading_statements(request.message, param))
 
-    # ── Fire remaining tasks in parallel ─────────────────────────
     async def _summarize_then_rag() -> Dict[str, Any]:
         query = await summarize_for_rag(final_message)
         return await rag(query=query, reference=request.reference)
@@ -413,16 +405,75 @@ async def _main_stream(
     rag_task        = asyncio.create_task(_summarize_then_rag())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
     zep_prefs_task  = asyncio.create_task(asyncio.to_thread(get_user_preferences, request.user_id)) if request.user_id else None
+    await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
-    # ── PII check — resolves in ~150-200ms, starter first token ~300ms ──
-    # Awaiting here adds zero real latency since starter hasn't produced a token yet
-    if await pii_task:
+    # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
+    _instant_loader = get_instant_loading_message(param)
+    _shown_loaders: list[str] = [_instant_loader]
+    yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+    yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
+
+    # ── Pre-fetch LLM loaders while rag+validation run in background ─
+    # Await up to 1.3s for the nano call. rag_task + validation_task keep
+    # running regardless — we're just choosing when to check them.
+    _llm_msgs: list[str] = []
+    _llm_msgs_ready = False
+    _deep_research_sent = False
+    try:
+        _llm_msgs = await asyncio.wait_for(asyncio.shield(loading_task), timeout=1.3)
+        _llm_msgs_ready = True
+    except asyncio.TimeoutError:
+        pass  # still running — will retry in the loop
+    except Exception:
+        _llm_msgs = []
+        _llm_msgs_ready = True
+
+    # ── Await RAG + validation, emitting one LLM loader per 1.5s tick ──
+    _loader_index = 1
+    _pending = {rag_task, validation_task}
+    while _pending:
+        _, _pending = await asyncio.wait(_pending, timeout=1.5)
+        if _pending:  # still waiting — emit next loader
+            # Last-chance fetch if nano call wasn't ready after 1.3s
+            if not _llm_msgs_ready:
+                try:
+                    if loading_task.done():
+                        _llm_msgs = loading_task.result() or []
+                    else:
+                        _llm_msgs = await asyncio.wait_for(
+                            asyncio.shield(loading_task), timeout=0.5
+                        )
+                    _llm_msgs_ready = True
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    _llm_msgs = []
+                    _llm_msgs_ready = True
+
+            _llm_pos = _loader_index - 1
+            if _llm_pos < len(_llm_msgs):
+                _msg: str | None = _llm_msgs[_llm_pos]
+            elif not _deep_research_sent:
+                _msg = "Doing some deep research on this — almost there…"
+                _deep_research_sent = True
+            else:
+                _msg = None  # deep-research already shown — stay silent
+            if _msg:
+                _shown_loaders.append(_msg)
+                yield f"data: {json.dumps({'loading': _msg})}\n\n"
+            _loader_index += 1
+
+    # ── PII check (resolved by now — fired at t=0 in parallel) ───────
+    try:
+        pii_detected = pii_task.result() if pii_task.done() else await pii_task
+    except Exception:
+        pii_detected = False
+    if pii_detected:
         pii_message = (
             "To keep your information safe, please avoid sharing personal details "
             "like phone numbers, email addresses, or ID numbers in your messages. "
             "Feel free to ask me anything about travel destinations and I'll be happy to help!"
         )
-        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(pii_message.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
@@ -430,42 +481,22 @@ async def _main_stream(
         yield f"data: {json.dumps({'done': True, 'blocked': True, 'total_time': time.time() - start_time, 'reason': 'PII_DETECTED'})}\n\n"
         return
 
-    # ── Phase 1: stream starter tokens immediately ────────────────
-    ttfb_sent = False
-    while True:
-        token = await starter_queue.get()
-        if token is None:
-            break
-        if not ttfb_sent:
-            ttfb_sent = True
-            yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
-            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
-        # JSON-string-encode the token so the frontend can accumulate all chunks
-        # into a valid JSON string and call JSON.parse() at the end.
-        # json.dumps(token)[1:-1] gives the JSON escape sequences without outer quotes
-        # e.g. "it's" → it's  |  '"hello"' → \"hello\"  |  '\n' → \n
-        yield f"data: {json.dumps({'content': json.dumps(token)[1:-1]})}\n\n"
-        await asyncio.sleep(0.18)   # throttle starter so main agent is ready by the time it ends
-
-    # ── Separator: use JSON-string newline escapes, not literal newlines ──
-    # Literal '\n\n' would break JSON.parse on the frontend.
-    # '\\n\\n' (Python: backslash-n x2) → wire: "\\n\\n" → frontend buffer: \n\n (valid JSON escapes)
-    yield f"data: {json.dumps({'content': '\\n\\n'})}\n\n"
-
-    # ── Await both tasks (likely already done while starter was streaming) ──
+    # Both done — extract results
     try:
-        rag_result = await rag_task
+        rag_result = rag_task.result()
     except Exception as e:
         rag_result = e
 
     try:
-        validation_result = await validation_task
+        validation_result = validation_task.result()
     except Exception as e:
         validation_result = e
 
-    # ── RAG result (scope note check moved to instant gate above) ──
+    # ── RAG result ───────────────────────────────────────────────
     if isinstance(rag_result, Exception):
-        pass
+        _log.warning("[RAG] failed: %s — falling back to web_search_agent", rag_result)
+    else:
+        _log.info("[RAG] returned %d chunk(s)", len(rag_result.get("chunks") or []))
 
     # ── Validation check ─────────────────────────────────────────
     if isinstance(validation_result, Exception):
@@ -477,6 +508,8 @@ async def _main_stream(
         solution = validation_result.final_output.solution
         if len(solution) < 50:
             solution = "Let's keep it travel-focused. What would you like to explore next?"
+        yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(solution.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
         yield f"data: {json.dumps({'content': '\"}'})}\n\n"
@@ -495,6 +528,11 @@ async def _main_stream(
                 for k in ("entities", "chunks", "audience", "travel_style")
                 if rag_result.get(k)
             }
+            _log.info(
+                "[RAG] injecting %d chunks: %s",
+                len(rag_chunks),
+                [f"{c.get('name')} ({c.get('id')})" for c in rag_chunks],
+            )
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
 
@@ -516,19 +554,15 @@ async def _main_stream(
                 response_content.pois = ctx_pois
             yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ────────────────────────────
-            if request.user_id and conversation_id:
-                if not response_content.feedback:
-                    # Plan is complete (no more questions) → clear history in background
-                    asyncio.create_task(_redis_history.clear_conversation(
-                        request.user_id, conversation_id,
-                    ))
-                elif response_content.summary:
-                    asyncio.create_task(_redis_history.append_interaction(
-                        request.user_id, conversation_id,
-                        question=request.message,
-                        answer=json.dumps(jsonable_encoder(response_content)),
-                        max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
-                    ))
+            if not response_content.feedback:
+                asyncio.create_task(_redis_history.clear_conversation(thread_id))
+            elif response_content.summary:
+                asyncio.create_task(_redis_history.append_interaction(
+                    thread_id,
+                    question=request.message,
+                    answer=json.dumps(jsonable_encoder(response_content)),
+                    max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
+                ))
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
@@ -541,13 +575,44 @@ async def _main_stream(
     # Injecting irrelevant place chunks would cause it to format places
     # instead of fetching live information.
     if rag_data and not is_realtime:
-        final_message_with_ref += f"\n\n[RAG_RESULTS]\n{json.dumps(rag_data)}\n[/RAG_RESULTS]"
+        # Build a clear ID lookup table above the raw JSON so the agent
+        # can only match IDs to exact names — no guessing.
+        _chunks = rag_data.get("chunks") or []
+        _id_table_lines = ["VERIFIED ID TABLE — only these IDs exist, matched to their exact name:"]
+        for _c in _chunks:
+            _cid   = _c.get("id", "")
+            _cname = _c.get("name", "")
+            _ctype = _c.get("type", "place")
+            _cat   = {"activity": "activity", "restaurant": "dine", "food": "dine",
+                      "hotel": "stay", "accommodation": "stay"}.get(_ctype, "place")
+            _id_table_lines.append(f'  id="{_cid}" | name="{_cname}" | category="{_cat}"')
+        _id_table = "\n".join(_id_table_lines)
+        final_message_with_ref += (
+            f"\n\n[RAG_RESULTS]\n"
+            f"{_id_table}\n\n"
+            f"FULL DATA:\n{json.dumps(rag_data)}\n"
+            f"[/RAG_RESULTS]"
+        )
 
     if zep_prefs:
         final_message_with_ref += f"\n\n[USER_PREFERENCES]\n{zep_prefs}\n[/USER_PREFERENCES]"
 
+    # Loading context: agent opens in sync with the last loader the user saw
+    _loaders_block = "\n".join(f"- {m}" for m in _shown_loaders)
     final_message_with_ref += (
-        "\n\n[INSTRUCTION] A lead-in has already been shown to the user. "
+        "\n\n[LOADING_CONTEXT]\n"
+        f"While the user waited, they saw these loading messages:\n{_loaders_block}\n"
+        f"Last message shown: \"{_shown_loaders[-1]}\"\n"
+        "Your opening sentence must feel like a natural continuation of that last message "
+        "as if you are picking up exactly where it left off. Do NOT repeat it word-for-word; "
+        "flow directly into the answer content.\n"
+        "[/LOADING_CONTEXT]"
+    )
+
+
+
+    final_message_with_ref += (
+        "\n\n[INSTRUCTION] "
         "NEVER start with: 'I am HipTraveler', 'I\u2019m HipTraveler', 'Your name is', 'Hi', 'Hello', or any self-introduction or greeting. "
         "Jump directly into the content — bullet list, facts, or answer body. "
         "If the user only greeted you or shared their name, respond with a single short question about their travel plans. "
@@ -585,9 +650,12 @@ async def _main_stream(
         )
     )
 
-    # ── Phase 2: stream main agent tokens ────────────────────────
+    # ── Phase 2: stream main agent tokens ────────────────────────────
+    # Loaders were already emitted during rag+validation wait — just stream now.
     redis_answer_parts: list[str] = []
     stream_error = False
+    answer_prefix_sent = False
+
     while True:
         token = await token_queue.get()
         if token is None:
@@ -596,6 +664,9 @@ async def _main_stream(
             yield f"data: {json.dumps({'error': str(token)})}\n\n"
             stream_error = True
             break
+        if not answer_prefix_sent:
+            answer_prefix_sent = True
+            yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         yield f"data: {json.dumps({'content': token})}\n\n"
         redis_answer_parts.append(token)
 
@@ -603,9 +674,9 @@ async def _main_stream(
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"
 
     # ── Save explore Q&A to Redis (non-blocking, fire-and-forget) ─
-    if request.user_id and conversation_id and redis_answer_parts and not stream_error:
+    if redis_answer_parts and not stream_error:
         asyncio.create_task(_redis_history.append_interaction(
-            request.user_id, conversation_id,
+            thread_id,
             question=request.message, answer=''.join(redis_answer_parts),
             max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
         ))
@@ -614,7 +685,7 @@ async def _main_stream(
 # ─── Conversation Context Helpers ─────────────────────────────────
 
 def clean_answer(answer: str) -> str:
-    return answer.split("$$$$$")[0].strip()
+    return answer.strip()
 
 
 def build_conversation_context(request: QueryRequest, history: list[dict] | None = None) -> str:

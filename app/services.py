@@ -54,28 +54,27 @@ async def summarize_for_rag(message: str) -> str:
 
 async def generate_loading_statements(message: str, param: str) -> list:
     """
-    Call gpt-4.1-nano to produce 6 personalised loading statements for this specific query.
+    Call gpt-4.1-nano to produce 5 personalised loading statements for this specific query.
     Runs as a concurrent asyncio.Task — adds zero wall-clock latency to the pipeline.
 
-    Returns a list of up to 6 strings.
-    Falls back to [] on any failure; caller uses the static pool as fallback.
-
-    Layout (caller responsibility):
-      statements[0-2]  → shown at stages 0-2  (0.5 s, 3 s, 6 s)
-      statements[3-5]  → shown at stages 3-5  (10 s, 15 s, 20 s)
+    Returns a list of up to 5 strings.
+    Falls back to [] on any failure; caller uses the static instant message + a
+    deep-research fallback when these run out.
     """
     mode = "trip planner" if param == "plan" else "explore"
 
     prompt = (
         f"Travel AI conversation context (may include history):\n{message}\n\n"
         f"Mode: {mode}\n\n"
-        "Using the full context above (destination, topic, conversation history), "
-        "write exactly 6 short loading messages (5–10 words each) to display while the AI thinks.\n"
-        "Progression: acknowledgment → researching → personalising → reassuring → anticipating → patience.\n"
-        "Naturally reference the destination or topic from the conversation where it fits. "
-        "Never use the words 'searching', 'scanning', 'processing', 'computing', or imply heavy server work.\n"
-        "Tone: calm, confident, curated — the AI is thinking, not processing.\n"
-        'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…", "…"]}'
+        "Write exactly 5 short loading messages (6–10 words each) to display while the AI finds the answer.\n"
+        "Rules:\n"
+        "- Sound like a knowledgeable travel friend thinking out loud, not a chatbot.\n"
+        "- Reference the specific destination or topic naturally (e.g. 'Pulling up the best spots in Bali…').\n"
+        "- Each message should feel like progress: looking → finding → comparing → narrowing → almost ready.\n"
+        "- NEVER use: 'acknowledging', 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
+        "- NEVER start with a capital-letter action word like 'Acknowledging' or 'Researching'.\n"
+        "- Tone: warm, calm, confident — like the AI genuinely knows the answer and is retrieving it.\n"
+        'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…"]}'
     )
 
     try:
@@ -88,8 +87,8 @@ async def generate_loading_statements(message: str, param: str) -> list:
         raw      = response.choices[0].message.content.strip()
         data     = json.loads(raw)
         stmts    = data.get("messages", [])
-        if isinstance(stmts, list) and len(stmts) >= 3:
-            return [str(s) for s in stmts[:6]]
+        if isinstance(stmts, list) and len(stmts) >= 1:
+            return [str(s) for s in stmts[:5]]
     except Exception:
         pass
 
@@ -100,18 +99,19 @@ async def generate_loading_statements(message: str, param: str) -> list:
 
 _INSTANT_STATEMENTS = {
     'explore': [
-        "On it — one sec…",
-        "Let me check that for you…",
-        "Looking into this now…",
-        "Right on it…",
-        "Give me a moment…",
+        "Pulling up the best picks for you…",
+        "Finding what's worth your time here…",
+        "Getting the good stuff together…",
+        "Checking what stands out here…",
+        "Rounding up the top options…",
+        "Sorting through what's actually worth it…",
     ],
     'plan': [
-        "On it — one sec…",
-        "Great question — checking that now…",
-        "Smart move — let me look into that…",
-        "Right, let me pull that up…",
-        "Give me just a moment…",
+        "Putting your trip together…",
+        "Working out the details for you…",
+        "Getting your itinerary started…",
+        "Mapping this out for you…",
+        "Building your trip plan now…",
     ],
 }
 
@@ -342,9 +342,11 @@ async def stream_agent_to_queue(
                 pending = suffix_buf + chunk
                 if len(pending) > _SUFFIX_LEN:
                     emit = pending[:-_SUFFIX_LEN]
-                    await queue.put(emit)
-                    if answer_parts is not None:
-                        answer_parts.append(emit)
+                    emit = re.sub(r'\s*Source:\s*\S+', '', emit)
+                    if emit:
+                        await queue.put(emit)
+                        if answer_parts is not None:
+                            answer_parts.append(emit)
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
@@ -352,6 +354,7 @@ async def stream_agent_to_queue(
         # Flush suffix
         if suffix_buf:
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
+            cleaned = re.sub(r'\s*Source:\s*\S+', '', cleaned)
             if cleaned:
                 await queue.put(cleaned)
                 if answer_parts is not None:
@@ -359,10 +362,13 @@ async def stream_agent_to_queue(
 
         # Web search path: now that the full answer is ready, send question + answer
         # to the validator so it researches only the places web search returned.
-        # Strip the $$$$$ metadata block — validator only needs the readable text.
+        # Strip <POIS>...</POIS> XML blocks and any stray "Source: ..." annotations
+        # the agent may have appended despite instructions.
         if answer_parts:
             full_answer = ''.join(answer_parts)
-            full_answer = full_answer.split("$$$$$")[0].strip()
+            full_answer = re.sub(r'<POIS>.*?</POIS>', '', full_answer, flags=re.DOTALL)
+            full_answer = re.sub(r'\s*Source:\s*\S+', '', full_answer)
+            full_answer = full_answer.strip()
             research_further(f"{original_message}\n\nAnswer:\n{full_answer}")
 
         # Assistant answers are not saved to Zep — only user questions are saved

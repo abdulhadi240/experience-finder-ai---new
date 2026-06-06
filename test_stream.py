@@ -67,6 +67,10 @@ def stream_chat_response():
                     print(json.dumps(trip_plan, indent=2, ensure_ascii=False))
                     print(f"[TIMING] {json.dumps(timing_info, indent=2)}")
 
+                # ── Dynamic loading indicator ─────────────────────────
+                elif "loading" in data:
+                    print(f"\n[LOADING] {data['loading']}", flush=True)
+
                 # ── Error ─────────────────────────────────────────────
                 elif "error" in data:
                     print(f"\n[ERROR] {data['error']}")
