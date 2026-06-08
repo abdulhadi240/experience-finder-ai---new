@@ -40,6 +40,7 @@ class global_input_guardrail(BaseModel):
         reason: str
         isTravelRelated: bool
         isMemoryQuery: bool
+        isRealtime: bool
         solution: str
         
         

@@ -41,6 +41,9 @@ _REALTIME_SIGNALS = [
     "currently", "current conditions", "at the moment", "these days", "nowadays",
     # safety / news
     "is it safe", "is safe", "safe to travel", "travel safe", "safety",
+    "should i travel", "should i go", "should i visit", "should i still travel",
+    "should i still go", "is it ok to travel", "is it okay to travel",
+    "ok to travel", "okay to travel", "safe to visit", "safe to go",
     "current situation", "situation now",
     "latest news", "latest update", "latest updates", "latest situation",
     "whats happening", "what is happening",
@@ -562,7 +565,12 @@ async def _main_stream(
         return
 
     # ── Explore / General (isTravelRelated=False) ─────────────────
-    is_realtime = _is_realtime_query(request.message)
+    # Realtime is decided by INTENT in the validation agent (isRealtime),
+    # not by keyword matching. Fall back to the keyword heuristic only if
+    # the field is somehow missing.
+    is_realtime = getattr(validation_result.final_output, "isRealtime", None)
+    if is_realtime is None:
+        is_realtime = _is_realtime_query(request.message)
 
     # Skip RAG injection for real-time queries — web_search_agent expects
     # no RAG data and its instruction says "RAG returned nothing".
