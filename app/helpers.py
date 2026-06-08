@@ -68,6 +68,61 @@ def _is_realtime_query(message: str) -> bool:
     return any(signal in msg for signal in _REALTIME_SIGNALS)
 
 
+# \u2500\u2500\u2500 Affirmative routing backstop \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# When the user replies with a bare "yes"-type answer, the correct route
+# depends entirely on what OUR assistant just asked. Those closings are our
+# own controlled output with predictable wording, so we resolve the route
+# deterministically here as a backstop to the LLM intent classifier \u2014 it
+# can't drift even on a long, mixed conversation history.
+
+_AFFIRMATIVE_TOKENS = (
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "k", "go ahead",
+    "please", "please do", "sounds good", "lets do it", "let's do it",
+    "do it", "absolutely", "definitely", "go for it", "lets go", "let's go",
+)
+
+# Our itinerary-OFFER closings (single committed destination \u2192 build)
+_OFFER_MARKERS = (
+    "want me to put", "want me to build", "shall i build", "ready to map out",
+    "should i start building", "build a full itinerary", "full itinerary together",
+    "put a full itinerary", "build you a trip plan", "map out your",
+    "start building your", "want me to plan", "put together a detailed plan",
+)
+# Our SELECTION/choice closings (no single destination yet \u2192 keep exploring)
+_SELECTION_MARKERS = (
+    "which of these", "which from", "any of these", "any of those",
+    "which destination", "which one", "pick one", "pulling you", "which part",
+    "name it and", "calling your name", "winning for you", "which of those",
+)
+
+
+def _classify_affirmative(message: str, history: list[dict] | None) -> Optional[bool]:
+    """
+    Deterministic route override for bare affirmatives.
+
+    Returns:
+      True  \u2192 force trip planning (assistant just offered to build for ONE destination)
+      False \u2192 force explore (assistant asked the user to pick/choose first)
+      None  \u2192 not a bare affirmative, or last closing was neither \u2192 defer to the LLM
+    """
+    msg = message.strip().lower().strip("!.?")
+    is_affirmative = msg in _AFFIRMATIVE_TOKENS or (
+        len(msg.split()) <= 3 and msg.startswith(_AFFIRMATIVE_TOKENS)
+    )
+    if not is_affirmative or not history:
+        return None
+
+    last_answer = (history[-1].get("answer") or "").lower()
+    has_selection = any(m in last_answer for m in _SELECTION_MARKERS)
+    has_offer     = any(m in last_answer for m in _OFFER_MARKERS)
+
+    if has_selection:
+        return False           # "which of these?" \u2192 user must still name one
+    if has_offer:
+        return True            # "want me to build for <City>?" \u2192 build it
+    return None
+
+
 # ─── Instant Location Scope Gate ─────────────────────────────────
 
 def _check_location_scope(message: str, reference: str) -> Optional[str]:
@@ -541,8 +596,21 @@ async def _main_stream(
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
 
+    # ── Resolve the planning route ───────────────────────────────
+    # Deterministic backstop first (reads our own last closing), then the
+    # LLM intent verdict. The backstop only fires on a bare affirmative when
+    # our last closing was unambiguously an offer or a selection question.
+    is_travel_related = validation_result.final_output.isTravelRelated
+    _affirm_override = _classify_affirmative(request.message, history)
+    if _affirm_override is not None and _affirm_override != is_travel_related:
+        _log.info(
+            "[ROUTE] affirmative backstop override: isTravelRelated %s → %s",
+            is_travel_related, _affirm_override,
+        )
+        is_travel_related = _affirm_override
+
     # ── Trip planning (isTravelRelated=True) ─────────────────────
-    if validation_result.final_output.isTravelRelated:
+    if is_travel_related:
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
@@ -632,6 +700,16 @@ async def _main_stream(
         agent_name = "rag_format_agent"
     else:
         agent_name = "web_search_agent"
+
+    # One-line routing decision — explains exactly why this agent was chosen.
+    _log.info(
+        "[ROUTE] agent=%s | isRealtime=%s | isMemoryQuery=%s | rag_chunks=%d | query=%r",
+        agent_name,
+        is_realtime,
+        validation_result.final_output.isMemoryQuery,
+        len(rag_chunks),
+        request.message,
+    )
 
     _log.info(
         "[AGENT INPUT] agent=%s | user=%s\n%s",

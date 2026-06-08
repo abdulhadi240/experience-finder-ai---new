@@ -1019,24 +1019,26 @@ Examples:
 
 ## STEP 4 — REALTIME INTENT (set isRealtime by MEANING, never by keyword)
 
-Decide isRealtime purely from INTENT: **would a correct, trustworthy answer depend on the CURRENT state of the world** (something that can change day to day), rather than stable travel knowledge?
+Decide isRealtime purely from INTENT. ⚠️ DEFAULT IS false. Set true ONLY when the answer is essentially worthless unless it reflects the CURRENT, possibly-changed-today state of the world. Wanting "good" or "fresh" recommendations is NOT enough — that's still evergreen.
 
-**isRealtime = true** when answering well requires live / up-to-date information, e.g.:
-- Safety, security, "should I go / is it safe / is it worth traveling there now", conflict, unrest, protests, war, crime trends
-- Current events, news, "what's happening", the present situation in a place
-- Weather, forecasts, conditions right now or for upcoming dates
-- Prices, ticket costs, entry fees, exchange rates
-- Opening hours, "open now", whether something is currently operating, closures, strikes
-- Visa / entry requirements, border status, travel advisories, health/entry rules
-- Anything explicitly time-anchored ("now", "today", "this week", "currently", "these days", "latest")
-- Availability, events, festivals happening during a specific/near period
+**isRealtime = true** ONLY when the core of the answer is a live fact that changes day to day:
+- Safety / security: "should I go / is it safe / is it worth traveling there now", conflict, unrest, protests, war, crime trends, travel advisories
+- Current events / news: "what's happening", the present situation in a place right now
+- Weather / conditions: forecasts, "what's the weather", conditions now or for specific upcoming dates
+- Prices / costs: ticket prices, entry fees, exchange rates, "how much is X right now"
+- Operating status: opening hours, "open now", closures, strikes, whether something is currently running
+- Entry rules: visa / entry requirements, border status, health/entry rules
+- Time-pinned availability: specific events/festivals happening during a specific or near-term period
 
-**isRealtime = false** for stable, evergreen questions:
-- "Best things to do in Tokyo", "top beaches in Bali", "where should I go for a honeymoon"
-- General recommendations, comparisons, itineraries, history, culture, typical-season advice ("is autumn nice in Kyoto" in general terms)
+**isRealtime = false** — DEFAULT — for everything that draws on stable travel knowledge, INCLUDING:
+- ANY "best / top / good / must-see / things to do / where should I" recommendation query — e.g. "best surfing spots", "best vegan restaurants in LA", "top beaches in Bali", "things to do in Tokyo". These are evergreen even though a human could check fresh sources — our place database (RAG) should answer them.
+- Comparisons, itineraries, history, culture, cuisine, typical-season advice ("is autumn nice in Kyoto")
+- A bare destination name, or narrowing to one place from a list
 - The user's own preferences/memory
 
-Judge by intent, not surface words. "How's Cairo these days?" = isRealtime true (wants current state). "What's Cairo known for?" = isRealtime false (evergreen). A safety/"should I travel" question is ALWAYS isRealtime = true AND isTravelRelated = false (it wants an advisory, not an itinerary).
+⚠️ A "best places / best restaurants / things to do" query is NEVER realtime, even if it mentions a city or "right now" loosely. Only flag realtime when the user is specifically asking about current conditions, safety, weather, prices, hours, news, or entry rules.
+
+Judge by intent: "How's Cairo these days?" = true (wants current state). "What's Cairo known for?" / "best things to do in Cairo" = false (evergreen). A safety/"should I travel" question is ALWAYS isRealtime = true AND isTravelRelated = false (it wants an advisory, not an itinerary).
 
 For isMemoryQuery = true, set isRealtime = false.
 
