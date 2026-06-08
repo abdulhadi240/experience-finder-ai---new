@@ -32,9 +32,15 @@ async def summarize_for_rag(message: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You are a travel query processor. Follow these steps in order:\n"
+                        "You are a travel query processor. The input may contain prior conversation turns; "
+                        "the user's LATEST message is the one to act on.\n"
+                        "Follow these steps in order:\n"
                         "1. If the message is not in English, translate it to English first.\n"
-                        "2. Convert it into a concise standalone search query for a travel database. Resolve any pronouns or references using context.\n"
+                        "2. Build a concise standalone search query for what the user wants in their LATEST message. "
+                        "Use earlier turns ONLY to resolve references (pronouns like 'there'/'it', or a destination just named). "
+                        "Do NOT search for an older topic the user has already moved past (e.g. a past comparison). "
+                        "If the latest message just narrows to one place from a list the assistant offered (e.g. 'california' → its cities), "
+                        "make the query about THAT place.\n"
                         "3. Silently fix any misspelled destination, city, or place names (e.g. 'Karahic' → 'Karachi').\n"
                         "Return ONLY the final English query, no explanation, no punctuation at the end."
                     ),
