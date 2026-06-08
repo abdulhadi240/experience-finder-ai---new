@@ -577,8 +577,9 @@ async def _main_stream(
             _cid   = _c.get("id", "")
             _cname = _c.get("name", "")
             _ctype = _c.get("type", "place")
-            _cat   = {"activity": "activity", "restaurant": "dine", "food": "dine",
-                      "hotel": "stay", "accommodation": "stay"}.get(_ctype, "place")
+            _cat   = {"activity": "activity", "restaurant": "restaurant", "food": "restaurant",
+                      "dine": "restaurant", "hotel": "hotel", "accommodation": "hotel",
+                      "stay": "hotel", "tour": "tour", "place": "place"}.get(_ctype, "place")
             _id_table_lines.append(f'  id="{_cid}" | name="{_cname}" | category="{_cat}"')
         _id_table = "\n".join(_id_table_lines)
         final_message_with_ref += (

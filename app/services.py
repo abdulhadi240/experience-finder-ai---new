@@ -64,12 +64,16 @@ async def generate_loading_statements(message: str, param: str) -> list:
     mode = "trip planner" if param == "plan" else "explore"
 
     prompt = (
-        f"Travel AI conversation context (may include history):\n{message}\n\n"
+        f"Travel AI conversation context (may include prior turns; newest message is last):\n{message}\n\n"
         f"Mode: {mode}\n\n"
         "Write exactly 5 short loading messages (6–10 words each) to display while the AI finds the answer.\n"
         "Rules:\n"
+        "- FIRST infer what the user actually wants RIGHT NOW from the conversation. If earlier turns "
+        "established a destination or focus (e.g. they were exploring Pakistan and just said 'islamabad' "
+        "or 'yes'), the loaders MUST be about THAT destination/focus — never a different place.\n"
+        "- Reference the specific destination or topic by name (e.g. 'Pulling up the best of Islamabad…'). "
+        "Never mention a destination that isn't in the conversation.\n"
         "- Sound like a knowledgeable travel friend thinking out loud, not a chatbot.\n"
-        "- Reference the specific destination or topic naturally (e.g. 'Pulling up the best spots in Bali…').\n"
         "- Each message should feel like progress: looking → finding → comparing → narrowing → almost ready.\n"
         "- NEVER use: 'acknowledging', 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
         "- NEVER start with a capital-letter action word like 'Acknowledging' or 'Researching'.\n"
