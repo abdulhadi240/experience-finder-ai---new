@@ -86,6 +86,10 @@ async def generate_loading_statements(message: str, param: str) -> list:
         "- Sound like a knowledgeable travel friend thinking out loud, not a chatbot.\n"
         "- Each message should feel like progress: looking → finding → comparing → narrowing → almost ready.\n"
         "- NEVER use: 'acknowledging', 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
+        "- NEVER imply you are building/creating an itinerary or trip plan. Do NOT say 'building your itinerary', "
+        "'putting your trip together', 'planning your trip', 'mapping out your trip', or anything similar. "
+        "These loaders are for FINDING and GATHERING recommendations only — frame them as pulling up / rounding up / "
+        "narrowing down the best options.\n"
         "- NEVER start with a capital-letter action word like 'Acknowledging' or 'Researching'.\n"
         "- Tone: warm, calm, confident — like the AI genuinely knows the answer and is retrieving it.\n"
         'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…"]}'

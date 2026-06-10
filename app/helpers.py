@@ -451,7 +451,9 @@ async def _main_stream(
     # scope gate runs in a thread so pycountry I/O never blocks the event loop
     scope_task    = asyncio.create_task(asyncio.to_thread(_check_location_scope, request.message, request.reference))
     pii_task      = asyncio.create_task(check_pii_fast(request.message))
-    loading_task  = asyncio.create_task(generate_loading_statements(final_message, param))
+    # Loaders are always explore-style here: this streaming flow finds/shows
+    # recommendations, it does NOT build an itinerary — never use plan/itinerary wording.
+    loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
 
     async def _summarize_then_fetch() -> tuple[Any, Any]:
         # One shared summarized query feeds both retrieval endpoints, fired in parallel.
@@ -472,7 +474,7 @@ async def _main_stream(
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
-    _instant_loader = get_instant_loading_message(param)
+    _instant_loader = get_instant_loading_message("explore")
     _shown_loaders: list[str] = [_instant_loader]
     yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
     yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
