@@ -18,6 +18,8 @@ class QueryRequest(BaseModel):
     old_interactions: Optional[list[Interaction]] = None
     is_pro: Optional[bool] = False
     plan: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
+    location: Optional[str] = None  # user location for destination-guide personalization
+    filters: Optional[str] = None   # audience/style filter for destination-guide (e.g. "family")
     
     
 class Output_Format(BaseModel):
@@ -70,7 +72,8 @@ class TripPlan(BaseModel):
     experienceTypes: Optional[list[str]] = Field(None, description="list of curated experience keywords (e.g., 'romantic', 'adventure', 'cultural', 'family friendly', 'relaxation').")
     travelStyle: Optional[list[str]] = Field(None, description="list of travel styles (e.g., 'luxury', 'budget', 'backpacking', 'all inclusive', 'solo trip').")
     activities: Optional[list[str]] = Field(None, description="list of requested activities, normalized to base form (e.g., 'hiking', 'wine tasting', 'snorkeling').")
-    themes: Optional[list[str]] = Field(None, description="list of themes from media or pop culture (e.g., 'James Bond', 'Midnight in Paris').") 
+    weighted_activities: Optional[list[str]] = Field(None, description="The user's priority activities/interests, WEIGHT-ORDERED: index 0 = highest priority, last index = lowest. Extracted from everything the user emphasized or asked about across the WHOLE conversation (e.g. 'vegan restaurants', 'surfing', 'nightlife'). Preserve this order as-is — most important first, descending. Empty/null if none expressed.")
+    themes: Optional[list[str]] = Field(None, description="list of themes from media or pop culture (e.g., 'James Bond', 'Midnight in Paris').")
     pois: list[str] = Field(..., description="Explicitly mentioned Points of Interest.")  
     feedback: Optional[list[str]] = Field(None,description="Array of missing field names that require user input.")
     month: Optional[str] = Field(None, description="Month extracted from conversation")

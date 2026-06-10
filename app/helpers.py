@@ -68,61 +68,6 @@ def _is_realtime_query(message: str) -> bool:
     return any(signal in msg for signal in _REALTIME_SIGNALS)
 
 
-# \u2500\u2500\u2500 Affirmative routing backstop \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-# When the user replies with a bare "yes"-type answer, the correct route
-# depends entirely on what OUR assistant just asked. Those closings are our
-# own controlled output with predictable wording, so we resolve the route
-# deterministically here as a backstop to the LLM intent classifier \u2014 it
-# can't drift even on a long, mixed conversation history.
-
-_AFFIRMATIVE_TOKENS = (
-    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "k", "go ahead",
-    "please", "please do", "sounds good", "lets do it", "let's do it",
-    "do it", "absolutely", "definitely", "go for it", "lets go", "let's go",
-)
-
-# Our itinerary-OFFER closings (single committed destination \u2192 build)
-_OFFER_MARKERS = (
-    "want me to put", "want me to build", "shall i build", "ready to map out",
-    "should i start building", "build a full itinerary", "full itinerary together",
-    "put a full itinerary", "build you a trip plan", "map out your",
-    "start building your", "want me to plan", "put together a detailed plan",
-)
-# Our SELECTION/choice closings (no single destination yet \u2192 keep exploring)
-_SELECTION_MARKERS = (
-    "which of these", "which from", "any of these", "any of those",
-    "which destination", "which one", "pick one", "pulling you", "which part",
-    "name it and", "calling your name", "winning for you", "which of those",
-)
-
-
-def _classify_affirmative(message: str, history: list[dict] | None) -> Optional[bool]:
-    """
-    Deterministic route override for bare affirmatives.
-
-    Returns:
-      True  \u2192 force trip planning (assistant just offered to build for ONE destination)
-      False \u2192 force explore (assistant asked the user to pick/choose first)
-      None  \u2192 not a bare affirmative, or last closing was neither \u2192 defer to the LLM
-    """
-    msg = message.strip().lower().strip("!.?")
-    is_affirmative = msg in _AFFIRMATIVE_TOKENS or (
-        len(msg.split()) <= 3 and msg.startswith(_AFFIRMATIVE_TOKENS)
-    )
-    if not is_affirmative or not history:
-        return None
-
-    last_answer = (history[-1].get("answer") or "").lower()
-    has_selection = any(m in last_answer for m in _SELECTION_MARKERS)
-    has_offer     = any(m in last_answer for m in _OFFER_MARKERS)
-
-    if has_selection:
-        return False           # "which of these?" \u2192 user must still name one
-    if has_offer:
-        return True            # "want me to build for <City>?" \u2192 build it
-    return None
-
-
 # ─── Instant Location Scope Gate ─────────────────────────────────
 
 def _check_location_scope(message: str, reference: str) -> Optional[str]:
@@ -188,12 +133,28 @@ def _check_location_scope(message: str, reference: str) -> Optional[str]:
 _rag_client = httpx.AsyncClient(timeout=30.0)
 
 
-async def rag(query: str, reference: str) -> Dict[str, Any]:
-    """Fully async RAG call via shared httpx client."""
+async def rag(
+    query: str,
+    reference: str,
+    thread_id: str = "",
+    location: str = "",
+    filters: str = "",
+    top_k: int = 5,
+    category: str = "places",
+) -> Dict[str, Any]:
+    """Fully async RAG call via shared httpx client (/chat endpoint)."""
     if not query or not query.strip():
         raise ValueError("Query cannot be empty or None")
 
-    payload = {"query": query.strip(), "reference": reference}
+    payload = {
+        "query": query.strip(),
+        "reference": reference,
+        "top_k": top_k,
+        "category": category,
+        "location": location or "",
+        "filters": filters or "",
+        "thread_id": thread_id,
+    }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
     try:
@@ -215,6 +176,51 @@ async def rag(query: str, reference: str) -> Dict[str, Any]:
         raise Exception("Failed to connect to RAG webhook")
     except httpx.HTTPStatusError as e:
         raise Exception(f"RAG HTTP error: {e}")
+
+
+async def rag_guide(
+    query: str,
+    reference: str,
+    thread_id: str,
+    location: str = "",
+    filters: str = "",
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    """
+    Destination-guide retrieval via the /chat/guide endpoint.
+    Runs in parallel with rag(); returns guide content for the agent.
+    """
+    if not query or not query.strip():
+        raise ValueError("Query cannot be empty or None")
+
+    payload = {
+        "query": query.strip(),
+        "reference": reference,
+        "top_k": top_k,
+        "location": location or "",
+        "filters": filters or "",
+        "thread_id": thread_id,
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+    try:
+        response = await _rag_client.post(
+            url="https://rag.hiptraveler.com/chat/guide",
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {"success": True, "data": response.text, "status_code": response.status_code}
+
+    except httpx.TimeoutException:
+        raise Exception("Guide request timed out after 30 seconds")
+    except httpx.ConnectError:
+        raise Exception("Failed to connect to Guide webhook")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"Guide HTTP error: {e}")
 
 
 # ─── Explore Context Extractor ───────────────────────────────────
@@ -447,11 +453,21 @@ async def _main_stream(
     pii_task      = asyncio.create_task(check_pii_fast(request.message))
     loading_task  = asyncio.create_task(generate_loading_statements(final_message, param))
 
-    async def _summarize_then_rag() -> Dict[str, Any]:
+    async def _summarize_then_fetch() -> tuple[Any, Any]:
+        # One shared summarized query feeds both retrieval endpoints, fired in parallel.
         query = await summarize_for_rag(final_message)
-        return await rag(query=query, reference=request.reference)
+        _loc = request.location or ""
+        _flt = request.filters or ""
+        rag_res, guide_res = await asyncio.gather(
+            rag(query=query, reference=request.reference, thread_id=thread_id,
+                location=_loc, filters=_flt),
+            rag_guide(query=query, reference=request.reference, thread_id=thread_id,
+                      location=_loc, filters=_flt),
+            return_exceptions=True,
+        )
+        return rag_res, guide_res
 
-    rag_task        = asyncio.create_task(_summarize_then_rag())
+    rag_task        = asyncio.create_task(_summarize_then_fetch())
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
@@ -542,11 +558,13 @@ async def _main_stream(
         yield f"data: {json.dumps({'done': True, 'blocked': True, 'total_time': time.time() - start_time, 'reason': 'PII_DETECTED'})}\n\n"
         return
 
-    # Both done — extract results
+    # Both done — extract results. rag_task returns (rag_result, guide_result),
+    # each of which may itself be an Exception (gather return_exceptions=True).
     try:
-        rag_result = rag_task.result()
+        rag_result, guide_result = rag_task.result()
     except Exception as e:
         rag_result = e
+        guide_result = e
 
     try:
         validation_result = validation_task.result()
@@ -558,6 +576,12 @@ async def _main_stream(
         _log.warning("[RAG] failed: %s — falling back to web_search_agent", rag_result)
     else:
         _log.info("[RAG] returned %d chunk(s)", len(rag_result.get("chunks") or []))
+
+    # ── Destination-guide result ─────────────────────────────────
+    if isinstance(guide_result, Exception):
+        _log.warning("[GUIDE] failed: %s", guide_result)
+    else:
+        _log.info("[GUIDE] returned guide payload (%d keys)", len(guide_result or {}))
 
     # ── Validation check ─────────────────────────────────────────
     if isinstance(validation_result, Exception):
@@ -596,21 +620,10 @@ async def _main_stream(
 
     final_message_with_ref = final_message + "\n\nReference : " + request.reference
 
-    # ── Resolve the planning route ───────────────────────────────
-    # Deterministic backstop first (reads our own last closing), then the
-    # LLM intent verdict. The backstop only fires on a bare affirmative when
-    # our last closing was unambiguously an offer or a selection question.
-    is_travel_related = validation_result.final_output.isTravelRelated
-    _affirm_override = _classify_affirmative(request.message, history)
-    if _affirm_override is not None and _affirm_override != is_travel_related:
-        _log.info(
-            "[ROUTE] affirmative backstop override: isTravelRelated %s → %s",
-            is_travel_related, _affirm_override,
-        )
-        is_travel_related = _affirm_override
-
     # ── Trip planning (isTravelRelated=True) ─────────────────────
-    if is_travel_related:
+    # Route is decided purely by the validation agent's INTENT verdict —
+    # no keyword/sentence backstops.
+    if validation_result.final_output.isTravelRelated:
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
@@ -663,6 +676,22 @@ async def _main_stream(
             f"{_id_table}\n\n"
             f"FULL DATA:\n{json.dumps(rag_data)}\n"
             f"[/RAG_RESULTS]"
+        )
+
+    # ── Destination-guide injection (runs alongside RAG, same gate) ──
+    # Guide content is editorial/destination context, not place-id data.
+    # The agent must render it INSIDE the answer — a short guide section at the
+    # TOP and another at the BOTTOM — in the same format as the rest of the answer.
+    if not is_realtime and not isinstance(guide_result, Exception) and guide_result:
+        final_message_with_ref += (
+            f"\n\n[DESTINATION_GUIDE]\n"
+            f"Editorial destination-guide content retrieved for this query. "
+            f"You MUST include this guide in your answer body, in the SAME format/voice as the rest of the answer:\n"
+            f"  • Open with a short guide-driven intro section at the TOP (1-2 sentences of the most useful context/framing from the guide), BEFORE the main recommendations.\n"
+            f"  • Close with a short guide-driven section at the BOTTOM (a practical tip / local insight from the guide), AFTER the recommendations and BEFORE the closing question.\n"
+            f"Weave it naturally — do not label it 'Destination Guide', do not dump raw JSON, and never attach place ids from here (it has none).\n"
+            f"{json.dumps(guide_result)}\n"
+            f"[/DESTINATION_GUIDE]"
         )
 
     # Loading context: agent opens in sync with the last loader the user saw

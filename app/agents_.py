@@ -196,6 +196,7 @@ trip_planning_agent = Agent(
         experienceTypes: Optional[list[str]] = Field(None)
         travelStyle: Optional[list[str]] = Field(None)
         activities: Optional[list[str]] = Field(None)
+        weighted_activities: Optional[list[str]] = Field(None, description="Priority activities/interests, weight-ordered: index 0 = highest priority, last = lowest. Preserve order as-is.")
         themes: Optional[list[str]] = Field(None)
         pois: list[str] = Field(..., description="Explicitly mentioned POIs.")
         feedback: Optional[list[str]] = Field(None, description="List of missing fields to ask for.")
@@ -551,6 +552,26 @@ trip_planning_agent = Agent(
     5. This rule runs on every turn, including on messages that trigger itinerary building — personalization must carry forward into the trip plan so it is tailored to what the user has actually been searching for.
 
     =====================================================================
+    🥇 weighted_activities — PRIORITY-ORDERED INTERESTS
+    =====================================================================
+
+    `weighted_activities` is a WEIGHT-ORDERED list of the user's priority interests/activities.
+    **index 0 = highest priority, last index = lowest.** It descends in importance — position 1 is what matters most to the user, then down.
+
+    **How to build it:**
+    1. Collect every specific interest/activity the user expressed across the WHOLE conversation — the same things captured in `activities` (e.g. "vegan restaurants", "surfing", "nightlife", "hiking"), plus any priority activities already provided to you in weight order (preserve their incoming order as-is).
+    2. ORDER them by how much the user emphasized/prioritized each one. Strongest signals of priority:
+       - What they asked about FIRST or MOST often, what they spent the most messages on, or what they called "main", "must", "really want", "most important".
+       - More recent explicit emphasis can raise an item's weight.
+    3. Output the final list most-important-first. Keep the user's exact phrasing. Deduplicate (case-insensitive).
+    4. If incoming priority activities were supplied already weight-ordered, KEEP that order and merge any newly-mentioned user interests in by their relative importance.
+    5. If the user expressed no specific interests, leave it null/empty.
+    6. This is for the planning flow output — always populate it when building/continuing a plan so the itinerary can prioritize accordingly.
+
+    Example: user explored "vegan restaurants" early and repeatedly, then mentioned "surfing" once, then "nightlife" in passing →
+    weighted_activities: ["vegan restaurants", "surfing", "nightlife"]  (0 = top priority).
+
+    =====================================================================
     👥 PAX RULE
     =====================================================================
 
@@ -879,19 +900,24 @@ If NOT travel-related AND no travel context in conversation → isValid = false,
 
 Only reached if the query IS travel-related.
 
-Ask yourself one question: **What does the user actually want to happen right now?**
+**Read the INTENT of the user's CURRENT message (in context). Do NOT assume they are answering your last question — they may have switched intent entirely.** Classify what they want RIGHT NOW into ONE of three:
+  (a) BUILD AN ITINERARY → isTravelRelated = true
+  (b) GENERAL / EXPLORE question (recommendations, advice, preferences, narrowing) → isTravelRelated = false
+  (c) REALTIME info (safety, weather, prices, hours, news) → isTravelRelated = false (and isRealtime = true)
 
-**isTravelRelated = true** — The user wants an ITINERARY to be built. They are past the research phase and are ready for the system to generate a structured trip plan. Both conditions must be true:
-- They have committed to a specific destination — check the ENTIRE conversation, not just the current message
-- Their core intent is "BUILD the plan" — they want a structured itinerary as the output, not information, advice, or ideas. Expressing interest ("I'm interested in...", "can you help me with...") is NOT the same as requesting a plan to be built.
+**isTravelRelated = true ONLY IF BOTH of these hold — this is a hard precondition:**
+1. **ONE single, specific destination is committed** — a single city or place the user has locked onto (e.g. "Tokyo", "Uluwatu"). A theme ("a surf trip"), a country with no city, or a LIST still being chosen from (e.g. 5 surf spots on the table) is NOT a committed destination.
+2. **The current intent is "BUILD the plan"** — they want a structured itinerary generated NOW. An explicit build request ("build it", "make the itinerary", "plan it") or a clear "yes" to an itinerary offer for that one destination.
 
-**⚠️ CONVERSATION CONTINUITY RULE (CRITICAL):**
-If the conversation history shows the user previously expressed planning intent (e.g., "I want to plan a trip", "plan a trip in July", "build an itinerary") — that intent CARRIES FORWARD through the entire conversation. It does NOT reset with each new message. Subsequent messages that narrow down the destination (e.g., "asia" → "japan" → "tokyo") are CONTINUING the planning flow, not starting a new exploration.
+If EITHER condition is missing → isTravelRelated = false. In particular:
+- A PREFERENCE or self-description ("I'm an advanced surfer", "we're a family of 4", "on a budget", "I like nightlife") is NEVER a build request. It refines what to recommend → isTravelRelated = false, keep exploring.
+- A GENERAL question ("which one is best?", "what's the food like?", "is it crowded?") → isTravelRelated = false.
+- Multiple destinations still on the table → NOT committed → isTravelRelated = false, even if planning was discussed.
 
-When the user is in an active planning flow:
-- A destination name ("tokyo", "japan", "bali") = continuing the plan → isTravelRelated = true
-- An explicit planning word ("itinerary", "plan it", "build it", "make it", "let's go") = confirming the plan → isTravelRelated = true
-- A short answer to a planning question (city name, date, number of days) = providing details for the plan → isTravelRelated = true
+**⚠️ CONVERSATION CONTINUITY RULE:**
+Prior planning interest does carry forward, BUT it NEVER overrides the hard precondition above. Continuity only matters once ONE destination is committed:
+- After a single destination is locked AND an itinerary offered: a destination name, "itinerary"/"plan it"/"build it", or a planning detail (dates, days) = continuing the plan → isTravelRelated = true.
+- Before a single destination is locked (still choosing from a list, giving preferences, asking questions): isTravelRelated = false regardless of earlier planning talk. The user is still in discovery.
 
 **⚠️ NEGATION / REDIRECT RULE — OVERRIDES CONVERSATION CONTINUITY:**
 If the user's current message starts with or contains an explicit negation or redirect that cancels the previous planning flow — planning intent RESETS. Set isTravelRelated = false and treat as a fresh explore query.
@@ -974,6 +1000,9 @@ Examples where intent = still deciding / exploring:
 - "Best beaches in Thailand?" ❌ — research
 - "Top restaurants in Rome?" ❌ — recommendation request
 - "Is October a good time to visit India?" ❌ — advice seeking
+- "I'm an advanced surfer" / "we're a family of 4" / "on a budget" ❌ — a PREFERENCE that refines recommendations; no single destination committed and no build request → isTravelRelated = false, keep exploring
+- "Which one is the best?" ❌ — asking for an opinion among options, still deciding → isTravelRelated = false
+- (After a list of 5 surf spots) "I'm an advanced surfer" ❌ — narrowing preference, still multiple options on the table, NOT a build request → isTravelRelated = false
 - "Should I travel to Iran now?" ❌ — safety/advisory question, wants an opinion on current conditions, NOT an itinerary → isTravelRelated = false
 - "Should I go to X right now?" / "Is it safe to travel to X?" / "Is it worth visiting X?" ❌ — advice/safety questions → isTravelRelated = false
 - "Give me 5 places to visit in Karachi" ❌ — list/inspiration request
@@ -1165,6 +1194,8 @@ rag_format_agent = Agent(
     instructions=f"""
 <role>
 You are HipTraveler's travel assistant. You talk like a well-traveled friend — warm, practical, and concise. RAG data has been retrieved and injected into the message inside a [RAG_RESULTS]...[/RAG_RESULTS] block. Your job is to combine that data with your own travel knowledge to give the best possible answer.
+
+A separate [DESTINATION_GUIDE]...[/DESTINATION_GUIDE] block may also be present — editorial destination context (local tips, framing, background). When present you MUST surface it INSIDE the answer body, in the SAME format and voice as the rest of the answer: a short guide-driven intro section at the TOP (before the recommendations) and a short guide-driven tip/insight section at the BOTTOM (after the recommendations, before the closing question). Weave it naturally — never label it "Destination Guide", never dump raw JSON. It contains NO place ids: never attach a `<poi id>` from guide content. Place ids come ONLY from the [RAG_RESULTS] VERIFIED ID TABLE.
 </role>
 
 <current_turn_anchor>
@@ -1408,6 +1439,8 @@ web_search_agent = Agent(
 <role>
 You are HipTraveler's travel guide. RAG returned no relevant results for this query.
 You MUST use web search to find accurate, up-to-date information. Do NOT answer from general knowledge alone.
+
+A [DESTINATION_GUIDE]...[/DESTINATION_GUIDE] block may be present — editorial destination context (local tips, framing, background). When present you MUST surface it INSIDE the answer body, in the SAME format and voice as the rest of the answer: a short guide-driven intro section at the TOP (before the recommendations) and a short guide-driven tip/insight section at the BOTTOM (after the recommendations, before the closing question). Weave it naturally — never label it "Destination Guide", never dump raw JSON. It contains NO place ids, so never attach ids from it.
 </role>
 
 <current_turn_anchor>
