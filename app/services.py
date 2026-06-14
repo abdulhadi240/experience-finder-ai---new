@@ -56,6 +56,111 @@ async def summarize_for_rag(message: str) -> str:
         return message
 
 
+# ─── RAG Payload Builder (full structured payload) ───────────────
+
+# Valid retrieval categories for the /chat endpoint.
+_RAG_CATEGORIES = {"places", "place", "tour", "activity", "restaurant", "hotel"}
+_RAG_TOPK_DEFAULT = 10
+_RAG_TOPK_MAX = 50
+
+
+async def build_rag_payload(
+    message: str,
+    fallback_location: str = "",
+    fallback_filters: str = "",
+) -> dict:
+    """
+    Ultra-fast gpt-4.1-nano call that parses the user's LATEST message (which may
+    contain conversation history / pronouns) into a complete, structured RAG payload.
+
+    Returns a dict with: query, category, top_k, location, filters.
+
+    - query    : clean standalone English search query.
+    - category : one of place/tour/activity/restaurant/hotel; 'places' for a
+                 general "things to do" request.
+    - top_k    : how many results to retrieve. Default 10; raised only when the
+                 user explicitly asks for more (e.g. "give me 20").
+    - location : destination the search should be scoped to (extracted from the
+                 message), else the caller-provided fallback.
+    - filters  : audience/style keywords (e.g. family, vegan, budget, luxury),
+                 else the caller-provided fallback.
+
+    This REPLACES the older summarize_for_rag nano call — it is the same single
+    nano round-trip, just returning a richer object, so it adds zero latency.
+    On any failure it degrades gracefully to a query-only payload.
+    """
+    fallback = {
+        "query": message.strip(),
+        "category": "places",
+        "top_k": _RAG_TOPK_DEFAULT,
+        "location": fallback_location or "",
+        "filters": fallback_filters or "",
+    }
+    try:
+        response = await _openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You build a search payload for a travel RAG engine. The input may contain prior "
+                        "conversation turns; act ONLY on the user's LATEST message, using earlier turns just "
+                        "to resolve references (pronouns like 'there'/'it', or a place just named/selected).\n\n"
+                        "Return ONLY valid JSON with EXACTLY these keys:\n"
+                        '{"query": str, "category": str, "top_k": int, "location": str, "filters": str}\n\n'
+                        "Rules:\n"
+                        "- query: a concise standalone English search query for what the user wants NOW. "
+                        "Translate to English if needed. Silently fix misspelled place names (e.g. 'Karahic'→'Karachi'). "
+                        "Do NOT search an older topic the user has moved past. No trailing punctuation.\n"
+                        "- category: the single best retrieval type. Use 'restaurant' for food/dining, 'hotel' for "
+                        "stays/accommodation, 'tour' for guided tours/day trips, 'activity' for things to do/experiences "
+                        "explicitly framed as activities, and 'places' for a general 'best things to do / what to see' "
+                        "request. When unsure, use 'places'.\n"
+                        f"- top_k: how many results to fetch. Default {_RAG_TOPK_DEFAULT}. ONLY change it if the user "
+                        "explicitly states a count (e.g. 'show me 20 spots' → 20, 'just give me 3' → 3). "
+                        f"Never exceed {_RAG_TOPK_MAX}.\n"
+                        "- location: the destination the search should be scoped to, taken from the message "
+                        "(e.g. 'best things to do in Paris' → 'Paris'). Empty string if no destination is mentioned.\n"
+                        "- filters: short audience/style keywords the user expressed (e.g. 'family', 'vegan', "
+                        "'budget', 'luxury', 'romantic'), comma-separated. Empty string if none.\n"
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            max_tokens=120,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content.strip()
+        data = json.loads(raw)
+
+        # ── sanitize each field, falling back where the model misbehaved ──
+        query = str(data.get("query") or "").strip() or fallback["query"]
+
+        category = str(data.get("category") or "").strip().lower()
+        if category not in _RAG_CATEGORIES:
+            category = "places"
+
+        try:
+            top_k = int(data.get("top_k") or _RAG_TOPK_DEFAULT)
+        except (TypeError, ValueError):
+            top_k = _RAG_TOPK_DEFAULT
+        top_k = max(1, min(top_k, _RAG_TOPK_MAX))
+
+        location = str(data.get("location") or "").strip() or (fallback_location or "")
+        filters = str(data.get("filters") or "").strip() or (fallback_filters or "")
+
+        return {
+            "query": query,
+            "category": category,
+            "top_k": top_k,
+            "location": location,
+            "filters": filters,
+        }
+    except Exception:
+        return fallback
+
+
 # ─── LLM-Generated Loading Statements ───────────────────────────
 
 async def generate_loading_statements(message: str, param: str) -> list:

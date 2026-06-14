@@ -16,6 +16,7 @@ from .services import (
     get_complete_response,
     stream_agent_to_queue,
     summarize_for_rag,
+    build_rag_payload,
     check_pii_fast,
     generate_loading_statements,
     get_instant_loading_message,
@@ -139,7 +140,7 @@ async def rag(
     thread_id: str = "",
     location: str = "",
     filters: str = "",
-    top_k: int = 5,
+    top_k: int = 10,
     category: str = "places",
 ) -> Dict[str, Any]:
     """Fully async RAG call via shared httpx client (/chat endpoint)."""
@@ -157,6 +158,11 @@ async def rag(
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
+    print("\n" + "=" * 80)
+    print("[RAG /chat] >>> INPUT")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print("=" * 80)
+
     try:
         response = await _rag_client.post(
             url="https://rag.hiptraveler.com/chat",
@@ -164,11 +170,16 @@ async def rag(
             headers=headers,
         )
         response.raise_for_status()
-        pass
         try:
-            return response.json()
+            result = response.json()
         except json.JSONDecodeError:
-            return {"success": True, "data": response.text, "status_code": response.status_code}
+            result = {"success": True, "data": response.text, "status_code": response.status_code}
+
+        print("\n" + "-" * 80)
+        print("[RAG /chat] <<< OUTPUT")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("-" * 80 + "\n")
+        return result
 
     except httpx.TimeoutException:
         raise Exception("RAG request timed out after 30 seconds")
@@ -184,7 +195,7 @@ async def rag_guide(
     thread_id: str,
     location: str = "",
     filters: str = "",
-    top_k: int = 3,
+    top_k: int = 10,
 ) -> Dict[str, Any]:
     """
     Destination-guide retrieval via the /chat/guide endpoint.
@@ -203,6 +214,11 @@ async def rag_guide(
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
+    print("\n" + "=" * 80)
+    print("[GUIDE /chat/guide] >>> INPUT")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print("=" * 80)
+
     try:
         response = await _rag_client.post(
             url="https://rag.hiptraveler.com/chat/guide",
@@ -211,9 +227,15 @@ async def rag_guide(
         )
         response.raise_for_status()
         try:
-            return response.json()
+            result = response.json()
         except json.JSONDecodeError:
-            return {"success": True, "data": response.text, "status_code": response.status_code}
+            result = {"success": True, "data": response.text, "status_code": response.status_code}
+
+        print("\n" + "-" * 80)
+        print("[GUIDE /chat/guide] <<< OUTPUT")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("-" * 80 + "\n")
+        return result
 
     except httpx.TimeoutException:
         raise Exception("Guide request timed out after 30 seconds")
@@ -456,15 +478,20 @@ async def _main_stream(
     loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
 
     async def _summarize_then_fetch() -> tuple[Any, Any]:
-        # One shared summarized query feeds both retrieval endpoints, fired in parallel.
-        query = await summarize_for_rag(final_message)
-        _loc = request.location or ""
-        _flt = request.filters or ""
+        # One nano call parses the message into a full structured payload
+        # (query/category/top_k/location/filters); it then feeds both retrieval
+        # endpoints, fired in parallel. Same single nano round-trip as before.
+        p = await build_rag_payload(
+            final_message,
+            fallback_location=request.location or "",
+            fallback_filters=request.filters or "",
+        )
         rag_res, guide_res = await asyncio.gather(
-            rag(query=query, reference=request.reference, thread_id=thread_id,
-                location=_loc, filters=_flt),
-            rag_guide(query=query, reference=request.reference, thread_id=thread_id,
-                      location=_loc, filters=_flt),
+            rag(query=p["query"], reference=request.reference, thread_id=thread_id,
+                location=p["location"], filters=p["filters"],
+                top_k=p["top_k"], category=p["category"]),
+            rag_guide(query=p["query"], reference=request.reference, thread_id=thread_id,
+                      location=p["location"], filters=p["filters"]),
             return_exceptions=True,
         )
         return rag_res, guide_res
