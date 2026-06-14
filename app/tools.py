@@ -103,7 +103,7 @@ def rag(query: str , reference: str) -> Dict[str, Any]:
     payload = {
         "query": query.strip(),
         "reference":reference,
-        "top_k" : 20
+        "top_k" : 10
 
     }
     
