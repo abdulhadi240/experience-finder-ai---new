@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import re
 import time
@@ -67,6 +67,80 @@ def _is_realtime_query(message: str) -> bool:
     # normalise apostrophes so "what's" and "what\u2019s" both match
     msg = message.lower().replace("\u2019", "'").replace("\u2018", "'")
     return any(signal in msg for signal in _REALTIME_SIGNALS)
+
+
+
+# --- Conversational-reply detector ---
+# When the user is answering a mindset follow-up question (not starting a new
+# travel query), skip RAG entirely and inject [FOLLOW_UP_MODE] instead.
+
+_QUERY_STARTS_FOLLOWUP = (
+    "best ", "top ", "what ", "where ", "which ", "how ", "show ", "give ",
+    "list ", "find ", "recommend", "suggest",
+    "tell ", "can ", "is ", "are ", "do ", "does ",
+)
+_QUERY_CONTAINS_FOLLOWUP = (
+    "things to do", "places to visit", "places to see",
+    "what to do", "where to go", " vs ", " vs.", "which is better",
+    "compare ", "or better",
+)
+_PERSONAL_OPENER_RE = re.compile(
+    r"^(i\b|we\b|my\b|our\b|for\s+(me|us)\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
+    """
+    Returns True when the user's message looks like a conversational answer
+    to the agent's previous follow-up question rather than a new travel query.
+    """
+    if not history:
+        return False
+
+    # The last assistant turn must have ended with a question
+    last_answer = (history[-1].get("answer") or "").strip()
+    _clean = last_answer.rstrip('"').rstrip("}").strip()
+    if not _clean.endswith("?"):
+        return False
+
+    msg = message.strip()
+    msg_lower = msg.lower()
+
+    # Strong travel-query signals -> treat as a new query, not a reply
+    if any(msg_lower.startswith(q) for q in _QUERY_STARTS_FOLLOWUP):
+        return False
+    if any(q in msg_lower for q in _QUERY_CONTAINS_FOLLOWUP):
+        return False
+    if len(msg) > 400:
+        return False
+
+    # Personal opener -> almost certainly a reply
+    if _PERSONAL_OPENER_RE.match(msg):
+        return True
+
+    # Short message with no strong query signals -> treat as a reply
+    if len(msg) < 200:
+        return True
+
+    return False
+
+
+def _count_followup_turns(history: list[dict] | None) -> int:
+    # Count consecutive follow-up-mode responses at end of history.
+    # A follow-up-mode response: ends with '?' and has no POI block content.
+    # Length is NOT constrained — follow-up responses can be moderately long.
+    if not history:
+        return 0
+    count = 0
+    for item in reversed(history):
+        answer = (item.get("answer") or "").strip().rstrip('"').rstrip("}").strip()
+        if (answer.endswith("?")
+                and "<poi" not in answer.lower() and "<pois>" not in answer.lower()):
+            count += 1
+        else:
+            break
+    return count
 
 
 # ─── Instant Location Scope Gate ─────────────────────────────────
@@ -469,13 +543,13 @@ async def _main_stream(
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
 
+    # ── Detect follow-up reply — skip RAG when user is answering a mindset question ──
+    _is_followup = _is_conversational_reply(request.message, history)
+
     # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, scope, Zep all in parallel ──
     # scope gate runs in a thread so pycountry I/O never blocks the event loop
     scope_task    = asyncio.create_task(asyncio.to_thread(_check_location_scope, request.message, request.reference))
     pii_task      = asyncio.create_task(check_pii_fast(request.message))
-    # Loaders are always explore-style here: this streaming flow finds/shows
-    # recommendations, it does NOT build an itinerary — never use plan/itinerary wording.
-    loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
 
     async def _summarize_then_fetch() -> tuple[Any, Any]:
         # One nano call parses the message into a full structured payload
@@ -496,65 +570,73 @@ async def _main_stream(
         )
         return rag_res, guide_res
 
-    rag_task        = asyncio.create_task(_summarize_then_fetch())
+    # Follow-up replies skip RAG and LLM loaders entirely
+    if not _is_followup:
+        loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
+        rag_task      = asyncio.create_task(_summarize_then_fetch())
+    else:
+        loading_task  = None
+        rag_task      = None
+
     validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
-    _instant_loader = get_instant_loading_message("explore")
+    _instant_loader = get_instant_loading_message("explore") if not _is_followup else "On it…"
     _shown_loaders: list[str] = [_instant_loader]
     yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
     yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
 
-    # ── Pre-fetch LLM loaders while rag+validation run in background ─
-    # Await up to 1.3s for the nano call. rag_task + validation_task keep
-    # running regardless — we're just choosing when to check them.
-    _llm_msgs: list[str] = []
-    _llm_msgs_ready = False
-    _deep_research_sent = False
-    try:
-        _llm_msgs = await asyncio.wait_for(asyncio.shield(loading_task), timeout=1.3)
-        _llm_msgs_ready = True
-    except asyncio.TimeoutError:
-        pass  # still running — will retry in the loop
-    except Exception:
-        _llm_msgs = []
-        _llm_msgs_ready = True
+    if _is_followup:
+        # No RAG, no LLM loaders — just wait for validation (fast)
+        await validation_task
+    else:
+        # ── Pre-fetch LLM loaders while rag+validation run in background ─
+        _llm_msgs: list[str] = []
+        _llm_msgs_ready = False
+        _deep_research_sent = False
+        try:
+            _llm_msgs = await asyncio.wait_for(asyncio.shield(loading_task), timeout=1.3)
+            _llm_msgs_ready = True
+        except asyncio.TimeoutError:
+            pass  # still running — will retry in the loop
+        except Exception:
+            _llm_msgs = []
+            _llm_msgs_ready = True
 
-    # ── Await RAG + validation, emitting one LLM loader per 1.5s tick ──
-    _loader_index = 1
-    _pending = {rag_task, validation_task}
-    while _pending:
-        _, _pending = await asyncio.wait(_pending, timeout=1.5)
-        if _pending:  # still waiting — emit next loader
-            # Last-chance fetch if nano call wasn't ready after 1.3s
-            if not _llm_msgs_ready:
-                try:
-                    if loading_task.done():
-                        _llm_msgs = loading_task.result() or []
-                    else:
-                        _llm_msgs = await asyncio.wait_for(
-                            asyncio.shield(loading_task), timeout=0.5
-                        )
-                    _llm_msgs_ready = True
-                except asyncio.TimeoutError:
-                    pass
-                except Exception:
-                    _llm_msgs = []
-                    _llm_msgs_ready = True
+        # ── Await RAG + validation, emitting one LLM loader per 1.5s tick ──
+        _loader_index = 1
+        _pending = {rag_task, validation_task}
+        while _pending:
+            _, _pending = await asyncio.wait(_pending, timeout=1.5)
+            if _pending:  # still waiting — emit next loader
+                if not _llm_msgs_ready:
+                    try:
+                        if loading_task.done():
+                            _llm_msgs = loading_task.result() or []
+                        else:
+                            _llm_msgs = await asyncio.wait_for(
+                                asyncio.shield(loading_task), timeout=0.5
+                            )
+                        _llm_msgs_ready = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception:
+                        _llm_msgs = []
+                        _llm_msgs_ready = True
 
-            _llm_pos = _loader_index - 1
-            if _llm_pos < len(_llm_msgs):
-                _msg: str | None = _llm_msgs[_llm_pos]
-            elif not _deep_research_sent:
-                _msg = "Doing some deep research on this — almost there…"
-                _deep_research_sent = True
-            else:
-                _msg = None  # deep-research already shown — stay silent
-            if _msg:
-                _shown_loaders.append(_msg)
-                yield f"data: {json.dumps({'loading': _msg})}\n\n"
-            _loader_index += 1
+                _llm_pos = _loader_index - 1
+                if _llm_pos < len(_llm_msgs):
+                    _msg: str | None = _llm_msgs[_llm_pos]
+                elif not _deep_research_sent:
+                    _msg = "Doing some deep research on this — almost there…"
+                    _deep_research_sent = True
+                else:
+                    _msg = None  # deep-research already shown — stay silent
+                if _msg:
+                    _shown_loaders.append(_msg)
+                    yield f"data: {json.dumps({'loading': _msg})}\n\n"
+                _loader_index += 1
 
     # ── Scope gate (resolved by now — fired at t=0 in a thread) ─────
     try:
@@ -587,13 +669,16 @@ async def _main_stream(
         yield f"data: {json.dumps({'done': True, 'blocked': True, 'total_time': time.time() - start_time, 'reason': 'PII_DETECTED'})}\n\n"
         return
 
-    # Both done — extract results. rag_task returns (rag_result, guide_result),
-    # each of which may itself be an Exception (gather return_exceptions=True).
-    try:
-        rag_result, guide_result = rag_task.result()
-    except Exception as e:
-        rag_result = e
-        guide_result = e
+    # Both done — extract results.
+    if rag_task is not None:
+        try:
+            rag_result, guide_result = rag_task.result()
+        except Exception as e:
+            rag_result = e
+            guide_result = e
+    else:
+        rag_result = None
+        guide_result = None
 
     try:
         validation_result = validation_task.result()
@@ -601,13 +686,17 @@ async def _main_stream(
         validation_result = e
 
     # ── RAG result ───────────────────────────────────────────────
-    if isinstance(rag_result, Exception):
+    if rag_result is None:
+        pass  # follow-up mode — RAG intentionally skipped
+    elif isinstance(rag_result, Exception):
         _log.warning("[RAG] failed: %s — falling back to web_search_agent", rag_result)
     else:
         _log.info("[RAG] returned %d chunk(s)", len(rag_result.get("chunks") or []))
 
     # ── Destination-guide result ─────────────────────────────────
-    if isinstance(guide_result, Exception):
+    if guide_result is None:
+        pass  # follow-up mode — guide intentionally skipped
+    elif isinstance(guide_result, Exception):
         _log.warning("[GUIDE] failed: %s", guide_result)
     else:
         _log.info("[GUIDE] returned guide payload (%d keys)", len(guide_result or {}))
@@ -633,7 +722,7 @@ async def _main_stream(
     # Only chunks signal a real RAG hit — other fields are metadata
     rag_chunks = []
     rag_data = {}
-    if not isinstance(rag_result, Exception):
+    if rag_result is not None and not isinstance(rag_result, Exception):
         rag_chunks = rag_result.get("chunks") or []
         if rag_chunks:
             rag_data = {
@@ -652,7 +741,7 @@ async def _main_stream(
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     # Route is decided purely by the validation agent's INTENT verdict —
     # no keyword/sentence backstops.
-    if validation_result.final_output.isTravelRelated:
+    if not _is_followup and validation_result.final_output.isTravelRelated:
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
@@ -711,7 +800,7 @@ async def _main_stream(
     # Guide content is editorial/destination context, not place-id data.
     # The agent must render it INSIDE the answer — a short guide section at the
     # TOP and another at the BOTTOM — in the same format as the rest of the answer.
-    if not is_realtime and not isinstance(guide_result, Exception) and guide_result:
+    if not is_realtime and guide_result is not None and not isinstance(guide_result, Exception) and guide_result:
         final_message_with_ref += (
             f"\n\n[DESTINATION_GUIDE]\n"
             f"Editorial destination-guide content retrieved for this query. "
@@ -723,17 +812,39 @@ async def _main_stream(
             f"[/DESTINATION_GUIDE]"
         )
 
-    # Loading context: agent opens in sync with the last loader the user saw
-    _loaders_block = "\n".join(f"- {m}" for m in _shown_loaders)
-    final_message_with_ref += (
-        "\n\n[LOADING_CONTEXT]\n"
-        f"While the user waited, they saw these loading messages:\n{_loaders_block}\n"
-        f"Last message shown: \"{_shown_loaders[-1]}\"\n"
-        "Your opening sentence must feel like a natural continuation of that last message "
-        "as if you are picking up exactly where it left off. Do NOT repeat it word-for-word; "
-        "flow directly into the answer content.\n"
-        "[/LOADING_CONTEXT]"
-    )
+    if _is_followup:
+        _fup_count = _count_followup_turns(history)
+        if _fup_count >= 1:
+            # User has answered Q1 and Q2 — this is Turn 3: give the planning question
+            _fup_instruction = (
+                "\n\n[FOLLOW_UP_MODE: TURN 3 — PLANNING QUESTION]\n"
+                "You have already asked your 2 follow-up questions in the previous turns.\n"
+                "The user has now answered both. Do NOT ask another exploratory question.\n"
+                "Give the PLANNING QUESTION now and nothing else — one question that moves them into trip-building.\n"
+                "Do NOT output a <POIS> block or any recommendations.\n"
+                "[/FOLLOW_UP_MODE]"
+            )
+        else:
+            # User answered Q1 — this is Turn 2: ask Q2
+            _fup_instruction = (
+                "\n\n[FOLLOW_UP_MODE: TURN 2 — ASK Q2]\n"
+                "The user just answered your first follow-up question (Q1).\n"
+                "Ask your SECOND open-ended follow-up question now (Q2). One question only.\n"
+                "Do NOT output a <POIS> block or any recommendations.\n"
+                "[/FOLLOW_UP_MODE]"
+            )
+        final_message_with_ref += _fup_instruction
+    else:
+        # Loading context: agent opens without echoing the loader text
+        _loaders_block = "\n".join(f"- {m}" for m in _shown_loaders)
+        final_message_with_ref += (
+            "\n\n[LOADING_CONTEXT]\n"
+            f"While the user waited, they saw these loading messages:\n{_loaders_block}\n"
+            f"Last message shown: \"{_shown_loaders[-1]}\"\n"
+            "Do NOT reference, repeat, or echo any loading message text in your response. "
+            "Jump directly into your answer content.\n"
+            "[/LOADING_CONTEXT]"
+        )
 
 
 
@@ -750,7 +861,9 @@ async def _main_stream(
     #  - real-time queries     → web_search_agent  (mandatory live search, no RAG noise)
     #  - RAG chunks present    → rag_format_agent
     #  - no chunks, not r-t    → web_search_agent
-    if validation_result.final_output.isMemoryQuery:
+    if _is_followup:
+        agent_name = "rag_format_agent"
+    elif validation_result.final_output.isMemoryQuery:
         agent_name = "rag_format_agent"
     elif is_realtime:
         agent_name = "web_search_agent"
@@ -903,3 +1016,5 @@ async def generate_engage_stream(context: str) -> AsyncGenerator[str, None]:
         yield f"data: {json.dumps({'content': fallback})}\n\n"
 
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time})}\n\n"
+
+
