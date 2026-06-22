@@ -104,6 +104,11 @@ def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
     if not _clean.endswith("?"):
         return False
 
+    # After 2 consecutive follow-up turns the planning question was already asked.
+    # Force full validation flow so isTravelRelated can fire and trip planning can start.
+    if _count_followup_turns(history) >= 2:
+        return False
+
     msg = message.strip()
     msg_lower = msg.lower()
 
@@ -214,7 +219,7 @@ async def rag(
     thread_id: str = "",
     location: str = "",
     filters: str = "",
-    top_k: int = 10,
+    top_k: int = 8,
     category: str = "places",
 ) -> Dict[str, Any]:
     """Fully async RAG call via shared httpx client (/chat endpoint)."""
@@ -269,7 +274,7 @@ async def rag_guide(
     thread_id: str,
     location: str = "",
     filters: str = "",
-    top_k: int = 10,
+    top_k: int = 8,
 ) -> Dict[str, Any]:
     """
     Destination-guide retrieval via the /chat/guide endpoint.
@@ -545,6 +550,7 @@ async def _main_stream(
 
     # ── Detect follow-up reply — skip RAG when user is answering a mindset question ──
     _is_followup = _is_conversational_reply(request.message, history)
+    _fup_count_pre = _count_followup_turns(history)  # needed for USER_PREFERENCES injection at T4
 
     # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, scope, Zep all in parallel ──
     # scope gate runs in a thread so pycountry I/O never blocks the event loop
@@ -578,7 +584,10 @@ async def _main_stream(
         loading_task  = None
         rag_task      = None
 
-    validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
+    if not _is_followup:
+        validation_task = asyncio.create_task(Runner.run(validation_agent, final_message))
+    else:
+        validation_task = None
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
@@ -588,8 +597,7 @@ async def _main_stream(
     yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
 
     if _is_followup:
-        # No RAG, no LLM loaders — just wait for validation (fast)
-        await validation_task
+        pass  # no RAG, no validation — nothing to wait for
     else:
         # ── Pre-fetch LLM loaders while rag+validation run in background ─
         _llm_msgs: list[str] = []
@@ -680,10 +688,13 @@ async def _main_stream(
         rag_result = None
         guide_result = None
 
-    try:
-        validation_result = validation_task.result()
-    except Exception as e:
-        validation_result = e
+    if validation_task is not None:
+        try:
+            validation_result = validation_task.result()
+        except Exception as e:
+            validation_result = e
+    else:
+        validation_result = None
 
     # ── RAG result ───────────────────────────────────────────────
     if rag_result is None:
@@ -707,7 +718,10 @@ async def _main_stream(
         return
 
 
-    if not validation_result.final_output.isValid:
+    if (not _is_followup
+            and validation_result is not None
+            and not isinstance(validation_result, Exception)
+            and not validation_result.final_output.isValid):
         solution = validation_result.final_output.solution
         if len(solution) < 50:
             solution = "Let's keep it travel-focused. What would you like to explore next?"
@@ -767,8 +781,9 @@ async def _main_stream(
     # Realtime is decided by INTENT in the validation agent (isRealtime),
     # not by keyword matching. Fall back to the keyword heuristic only if
     # the field is somehow missing.
-    is_realtime = getattr(validation_result.final_output, "isRealtime", None)
-    if is_realtime is None:
+    if validation_result is not None and not isinstance(validation_result, Exception):
+        is_realtime = getattr(validation_result.final_output, "isRealtime", None) or False
+    else:
         is_realtime = _is_realtime_query(request.message)
 
     # Skip RAG injection for real-time queries — web_search_agent expects
@@ -825,16 +840,33 @@ async def _main_stream(
                 "[/FOLLOW_UP_MODE]"
             )
         else:
-            # User answered Q1 — this is Turn 2: ask Q2
+            # User answered Q1 — this is Turn 2: ask Q2 (target pace/style)
             _fup_instruction = (
                 "\n\n[FOLLOW_UP_MODE: TURN 2 — ASK Q2]\n"
-                "The user just answered your first follow-up question (Q1).\n"
-                "Ask your SECOND open-ended follow-up question now (Q2). One question only.\n"
-                "Do NOT output a <POIS> block or any recommendations.\n"
+                "The user just answered Q1 (what they value / experience priorities).\n"
+                "Ask Q2 now — target their TRAVEL PACE AND STYLE: how they like their days\n"
+                "to unfold, how much ground they cover, slow-and-deep vs busy-and-varied,\n"
+                "or the rhythm and structure that makes a trip feel right to them.\n"
+                "One open-ended question only. No recommendations, no <POIS> block.\n"
                 "[/FOLLOW_UP_MODE]"
             )
         final_message_with_ref += _fup_instruction
     else:
+        # If the user just completed the Q1+Q2 follow-up cycle (T4 = accepted planning),
+        # extract their two preference answers and inject as hard constraints.
+        if _fup_count_pre >= 2 and history and len(history) >= 2:
+            _q1_ans = (history[-2].get("question") or "").strip()
+            _q2_ans = (history[-1].get("question") or "").strip()
+            if _q1_ans or _q2_ans:
+                final_message_with_ref += (
+                    "\n\n[USER_PREFERENCES]\n"
+                    "Before accepting this plan, the user answered two follow-up questions.\n"
+                    "Treat these as HARD CONSTRAINTS — every POI selection, daily pace, and\n"
+                    "neighborhood choice must reflect both answers:\n\n"
+                    f"Experience priorities (what they value): \"{_q1_ans}\"\n"
+                    f"Travel pace and style (how they travel): \"{_q2_ans}\"\n"
+                    "[/USER_PREFERENCES]"
+                )
         # Loading context: agent opens without echoing the loader text
         _loaders_block = "\n".join(f"- {m}" for m in _shown_loaders)
         final_message_with_ref += (
@@ -863,7 +895,9 @@ async def _main_stream(
     #  - no chunks, not r-t    → web_search_agent
     if _is_followup:
         agent_name = "rag_format_agent"
-    elif validation_result.final_output.isMemoryQuery:
+    elif (validation_result is not None
+          and not isinstance(validation_result, Exception)
+          and validation_result.final_output.isMemoryQuery):
         agent_name = "rag_format_agent"
     elif is_realtime:
         agent_name = "web_search_agent"
@@ -877,7 +911,7 @@ async def _main_stream(
         "[ROUTE] agent=%s | isRealtime=%s | isMemoryQuery=%s | rag_chunks=%d | query=%r",
         agent_name,
         is_realtime,
-        validation_result.final_output.isMemoryQuery,
+        (validation_result.final_output.isMemoryQuery if validation_result and not isinstance(validation_result, Exception) else False),
         len(rag_chunks),
         request.message,
     )

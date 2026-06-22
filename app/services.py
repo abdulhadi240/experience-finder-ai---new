@@ -60,7 +60,7 @@ async def summarize_for_rag(message: str) -> str:
 
 # Valid retrieval categories for the /chat endpoint.
 _RAG_CATEGORIES = {"places", "place", "tour", "activity", "restaurant", "hotel"}
-_RAG_TOPK_DEFAULT = 10
+_RAG_TOPK_DEFAULT = 8
 _RAG_TOPK_MAX = 50
 
 
