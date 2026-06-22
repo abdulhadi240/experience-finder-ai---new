@@ -833,10 +833,16 @@ async def _main_stream(
             # User has answered Q1 and Q2 — this is Turn 3: give the planning question
             _fup_instruction = (
                 "\n\n[FOLLOW_UP_MODE: TURN 3 — PLANNING QUESTION]\n"
-                "You have already asked your 2 follow-up questions in the previous turns.\n"
-                "The user has now answered both. Do NOT ask another exploratory question.\n"
-                "Give the PLANNING QUESTION now and nothing else — one question that moves them into trip-building.\n"
-                "Do NOT output a <POIS> block or any recommendations.\n"
+                "You have already asked your 2 follow-up questions. The user has answered both.\n"
+                "Now move them into trip-building with a SINGLE closing question. Rules:\n\n"
+                "1. If the conversation gives you enough context to suggest a destination "
+                "(from earlier in the thread, or from what the user just shared) — NAME IT. "
+                "Say something like 'Based on what you've told me, [Destination] sounds like "
+                "the best fit — want me to build the trip around that, or did you have "
+                "somewhere else in mind?' One sentence recommendation + one question.\n\n"
+                "2. If no destination is clear yet — ask the single most useful question to "
+                "unlock it: which destination they want to anchor the trip around.\n\n"
+                "Do NOT ask another exploratory question. Do NOT output a <POIS> block.\n"
                 "[/FOLLOW_UP_MODE]"
             )
         else:
