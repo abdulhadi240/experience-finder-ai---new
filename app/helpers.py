@@ -25,6 +25,7 @@ from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage
 from .region_metadata import REGION_METADATA
 from . import redis_history as _redis_history
+from .rag_cache import build_rag_cache_key, get_rag_cache, set_rag_cache
 import os
 import logging
 
@@ -133,15 +134,16 @@ def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
 
 def _count_followup_turns(history: list[dict] | None) -> int:
     # Count consecutive follow-up-mode responses at end of history.
-    # A follow-up-mode response: ends with '?' and has no POI block content.
-    # Length is NOT constrained — follow-up responses can be moderately long.
+    # A follow-up-mode response has no POI block.
+    # T3 (most recent, i=0) may end without '?' (offer statement vs. question) — POI
+    # absence alone is enough. Older items require '?' to confirm they were question turns.
     if not history:
         return 0
     count = 0
-    for item in reversed(history):
+    for i, item in enumerate(reversed(history)):
         answer = (item.get("answer") or "").strip().rstrip('"').rstrip("}").strip()
-        if (answer.endswith("?")
-                and "<poi" not in answer.lower() and "<pois>" not in answer.lower()):
+        no_poi = "<poi" not in answer.lower() and "<pois>" not in answer.lower()
+        if no_poi and (i == 0 or answer.endswith("?")):
             count += 1
         else:
             break
@@ -566,6 +568,14 @@ async def _main_stream(
             fallback_location=request.location or "",
             fallback_filters=request.filters or "",
         )
+        # ── Redis cache check — skip RAG endpoint calls on hit ──
+        _cache_key = build_rag_cache_key(
+            p["query"], p["location"], p["category"], p["top_k"], request.reference
+        )
+        _cached = await get_rag_cache(_cache_key)
+        if _cached is not None:
+            return _cached  # (rag_result, guide_result) — no endpoint calls
+
         rag_res, guide_res = await asyncio.gather(
             rag(query=p["query"], reference=request.reference, thread_id=thread_id,
                 location=p["location"], filters=p["filters"],
@@ -574,6 +584,8 @@ async def _main_stream(
                       location=p["location"], filters=p["filters"]),
             return_exceptions=True,
         )
+        # Cache result for future identical queries (skips on exceptions)
+        await set_rag_cache(_cache_key, rag_res, guide_res)
         return rag_res, guide_res
 
     # Follow-up replies skip RAG and LLM loaders entirely
