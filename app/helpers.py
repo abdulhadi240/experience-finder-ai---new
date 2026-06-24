@@ -852,30 +852,48 @@ async def _main_stream(
     if _is_followup:
         _fup_count = _count_followup_turns(history)
         if _fup_count >= 1:
-            # User has answered Q1 and Q2 — this is Turn 3: give the planning question
+            # User has answered Q1 and Q2 — this is Turn 3: advise + planning question
             _fup_instruction = (
-                "\n\n[FOLLOW_UP_MODE: TURN 3 — PLANNING QUESTION]\n"
-                "You have already asked your 2 follow-up questions. The user has answered both.\n"
-                "Now move them into trip-building with a SINGLE closing question. Rules:\n\n"
-                "1. If the conversation gives you enough context to suggest a destination "
-                "(from earlier in the thread, or from what the user just shared) — NAME IT. "
-                "Say something like 'Based on what you've told me, [Destination] sounds like "
-                "the best fit — want me to build the trip around that, or did you have "
-                "somewhere else in mind?' One sentence recommendation + one question.\n\n"
-                "2. If no destination is clear yet — ask the single most useful question to "
-                "unlock it: which destination they want to anchor the trip around.\n\n"
-                "Do NOT ask another exploratory question. Do NOT output a <POIS> block.\n"
+                "\n\n[FOLLOW_UP_MODE: TURN 3 — ACKNOWLEDGE + ADVISE + PLANNING QUESTION]\n"
+                "The user has answered both Q1 (experience priorities) and Q2 (travel pace/style). "
+                "You now have a clear picture of what they want.\n\n"
+                "Write a MEDIUM-LENGTH response (no <POIS> block):\n\n"
+                "1. ACKNOWLEDGMENT (1 sentence) — pull together both Q1 and Q2 answers into one specific, "
+                "warm sentence that shows you absorbed both.\n\n"
+                "2. PERSONALIZED ADVICE (3–5 points) — show concretely how this destination fits their "
+                "exact profile. Use your own travel knowledge and any [DESTINATION_GUIDE] data present "
+                "(itinerary_hints, best_months, characteristics, known_for). Name specific neighborhoods, "
+                "areas, timing, or approaches that suit their pace and priorities. Suggest a rough framing "
+                "for the trip (e.g. how many days, which area to base in, what to anchor around). Be "
+                "concrete and personal — not generic praise. Use bullet points when listing distinct tips, "
+                "or flowing prose when it reads more naturally — whichever formats better.\n\n"
+                "3. PLANNING QUESTION (1 sentence, must end with ?) —\n"
+                "   • If the destination is clear from context: 'Based on what you've told me, "
+                "[Destination] sounds like the perfect fit — want me to build the trip around that?'\n"
+                "   • If destination is unclear: ask which destination they want to anchor the trip around.\n"
+                "   One question only. Always ends with '?'.\n\n"
+                "Do NOT output a <POIS> block.\n"
                 "[/FOLLOW_UP_MODE]"
             )
         else:
-            # User answered Q1 — this is Turn 2: ask Q2 (target pace/style)
+            # User answered Q1 — this is Turn 2: advise + ask Q2
             _fup_instruction = (
-                "\n\n[FOLLOW_UP_MODE: TURN 2 — ASK Q2]\n"
-                "The user just answered Q1 (what they value / experience priorities).\n"
-                "Ask Q2 now — target their TRAVEL PACE AND STYLE: how they like their days\n"
-                "to unfold, how much ground they cover, slow-and-deep vs busy-and-varied,\n"
-                "or the rhythm and structure that makes a trip feel right to them.\n"
-                "One open-ended question only. No recommendations, no <POIS> block.\n"
+                "\n\n[FOLLOW_UP_MODE: TURN 2 — ACKNOWLEDGE + ADVISE + ASK Q2]\n"
+                "The user just answered Q1 (what they value / experience priorities).\n\n"
+                "Write a MEDIUM-LENGTH response (no <POIS> block):\n\n"
+                "1. ACKNOWLEDGMENT (1 sentence) — reflect what they said in a way that shows you "
+                "understood, without just repeating their words.\n\n"
+                "2. DESTINATION-SPECIFIC ADVICE (3–5 points) — connect their stated priorities "
+                "to the destination using your own travel knowledge and any [DESTINATION_GUIDE] data "
+                "present (activities with bestSeasons/intensity, characteristics, known_for, "
+                "itinerary_hints). Be concrete: name neighborhoods, timing, what kind of experience "
+                "they will get. Not generic ('you'll love it') but specific ('the Alfama lanes are "
+                "quietest before 9am in spring'). Use bullet points when listing distinct tips or "
+                "advice points, or flowing prose when it reads more naturally — whichever formats better.\n\n"
+                "3. FOLLOW-UP QUESTION (1 sentence, ends with ?) — ask Q2: target their TRAVEL PACE "
+                "AND STYLE: how they like their days to unfold, how much ground they cover, the rhythm "
+                "that makes a trip feel right. Open-ended, no option lists.\n\n"
+                "Do NOT output a <POIS> block.\n"
                 "[/FOLLOW_UP_MODE]"
             )
         final_message_with_ref += _fup_instruction
