@@ -105,9 +105,9 @@ def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
     if not _clean.endswith("?"):
         return False
 
-    # After 2 consecutive follow-up turns the planning question was already asked.
+    # After 1 follow-up turn the planning question was already asked.
     # Force full validation flow so isTravelRelated can fire and trip planning can start.
-    if _count_followup_turns(history) >= 2:
+    if _count_followup_turns(history) >= 1:
         return False
 
     msg = message.strip()
@@ -850,67 +850,41 @@ async def _main_stream(
         )
 
     if _is_followup:
-        _fup_count = _count_followup_turns(history)
-        if _fup_count >= 1:
-            # User has answered Q1 and Q2 — this is Turn 3: advise + planning question
-            _fup_instruction = (
-                "\n\n[FOLLOW_UP_MODE: TURN 3 — ACKNOWLEDGE + ADVISE + PLANNING QUESTION]\n"
-                "The user has answered both Q1 (experience priorities) and Q2 (travel pace/style). "
-                "You now have a clear picture of what they want.\n\n"
-                "Write a MEDIUM-LENGTH response (no <POIS> block):\n\n"
-                "1. ACKNOWLEDGMENT (1 sentence) — pull together both Q1 and Q2 answers into one specific, "
-                "warm sentence that shows you absorbed both.\n\n"
-                "2. PERSONALIZED ADVICE (3–5 points) — show concretely how this destination fits their "
-                "exact profile. Use your own travel knowledge and any [DESTINATION_GUIDE] data present "
-                "(itinerary_hints, best_months, characteristics, known_for). Name specific neighborhoods, "
-                "areas, timing, or approaches that suit their pace and priorities. Suggest a rough framing "
-                "for the trip (e.g. how many days, which area to base in, what to anchor around). Be "
-                "concrete and personal — not generic praise. Use bullet points when listing distinct tips, "
-                "or flowing prose when it reads more naturally — whichever formats better.\n\n"
-                "3. PLANNING QUESTION (1 sentence, must end with ?) —\n"
-                "   • If the destination is clear from context: 'Based on what you've told me, "
-                "[Destination] sounds like the perfect fit — want me to build the trip around that?'\n"
-                "   • If destination is unclear: ask which destination they want to anchor the trip around.\n"
-                "   One question only. Always ends with '?'.\n\n"
-                "Do NOT output a <POIS> block.\n"
-                "[/FOLLOW_UP_MODE]"
-            )
-        else:
-            # User answered Q1 — this is Turn 2: advise + ask Q2
-            _fup_instruction = (
-                "\n\n[FOLLOW_UP_MODE: TURN 2 — ACKNOWLEDGE + ADVISE + ASK Q2]\n"
-                "The user just answered Q1 (what they value / experience priorities).\n\n"
-                "Write a MEDIUM-LENGTH response (no <POIS> block):\n\n"
-                "1. ACKNOWLEDGMENT (1 sentence) — reflect what they said in a way that shows you "
-                "understood, without just repeating their words.\n\n"
-                "2. DESTINATION-SPECIFIC ADVICE (3–5 points) — connect their stated priorities "
-                "to the destination using your own travel knowledge and any [DESTINATION_GUIDE] data "
-                "present (activities with bestSeasons/intensity, characteristics, known_for, "
-                "itinerary_hints). Be concrete: name neighborhoods, timing, what kind of experience "
-                "they will get. Not generic ('you'll love it') but specific ('the Alfama lanes are "
-                "quietest before 9am in spring'). Use bullet points when listing distinct tips or "
-                "advice points, or flowing prose when it reads more naturally — whichever formats better.\n\n"
-                "3. FOLLOW-UP QUESTION (1 sentence, ends with ?) — ask Q2: target their TRAVEL PACE "
-                "AND STYLE: how they like their days to unfold, how much ground they cover, the rhythm "
-                "that makes a trip feel right. Open-ended, no option lists.\n\n"
-                "Do NOT output a <POIS> block.\n"
-                "[/FOLLOW_UP_MODE]"
-            )
+        # User answered the single follow-up Q1 — give advice then go straight to planning
+        _fup_instruction = (
+            "\n\n[FOLLOW_UP_MODE: TURN 2 — ACKNOWLEDGE + ADVISE + PLANNING QUESTION]\n"
+            "The user just answered the follow-up question about what they value / their travel priorities.\n\n"
+            "Write a MEDIUM-LENGTH response (no <POIS> block):\n\n"
+            "1. ACKNOWLEDGMENT (1 sentence) — reflect what they said in a way that shows you "
+            "understood, without just repeating their words.\n\n"
+            "2. DESTINATION-SPECIFIC ADVICE (3–5 points) — connect their stated priorities "
+            "to the destination using your own travel knowledge and any [DESTINATION_GUIDE] data "
+            "present (activities with bestSeasons/intensity, characteristics, known_for, "
+            "itinerary_hints). Be concrete: name neighborhoods, timing, what kind of experience "
+            "they will get. Not generic ('you'll love it') but specific ('the Alfama lanes are "
+            "quietest before 9am in spring'). Use bullet points when listing distinct tips or "
+            "advice points, or flowing prose when it reads more naturally — whichever formats better.\n\n"
+            "3. PLANNING QUESTION (1 sentence, must end with ?) —\n"
+            "   • If the destination is clear from context: 'Based on what you've told me, "
+            "[Destination] sounds like the perfect fit — want me to build the trip around that?'\n"
+            "   • If destination is unclear: ask which destination they want to anchor the trip around.\n"
+            "   One question only. Always ends with '?'.\n\n"
+            "Do NOT output a <POIS> block.\n"
+            "[/FOLLOW_UP_MODE]"
+        )
         final_message_with_ref += _fup_instruction
     else:
-        # If the user just completed the Q1+Q2 follow-up cycle (T4 = accepted planning),
-        # extract their two preference answers and inject as hard constraints.
-        if _fup_count_pre >= 2 and history and len(history) >= 2:
-            _q1_ans = (history[-2].get("question") or "").strip()
-            _q2_ans = (history[-1].get("question") or "").strip()
-            if _q1_ans or _q2_ans:
+        # If the user just completed the single follow-up cycle (T3 = accepted planning),
+        # extract their preference answer and inject as a hard constraint.
+        if _fup_count_pre >= 1 and history and len(history) >= 1:
+            _q1_ans = (history[-1].get("question") or "").strip()
+            if _q1_ans:
                 final_message_with_ref += (
                     "\n\n[USER_PREFERENCES]\n"
-                    "Before accepting this plan, the user answered two follow-up questions.\n"
-                    "Treat these as HARD CONSTRAINTS — every POI selection, daily pace, and\n"
-                    "neighborhood choice must reflect both answers:\n\n"
-                    f"Experience priorities (what they value): \"{_q1_ans}\"\n"
-                    f"Travel pace and style (how they travel): \"{_q2_ans}\"\n"
+                    "Before accepting this plan, the user answered a follow-up question.\n"
+                    "Treat this as a HARD CONSTRAINT — every POI selection, daily pace, and\n"
+                    "neighborhood choice must reflect their stated preferences:\n\n"
+                    f"Travel priorities and style: \"{_q1_ans}\"\n"
                     "[/USER_PREFERENCES]"
                 )
         # Loading context: agent opens without echoing the loader text
