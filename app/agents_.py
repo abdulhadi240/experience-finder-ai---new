@@ -781,12 +781,13 @@ trip_planning_agent = Agent(
 
     | Field | What to fill |
     |---|---|
-    | theme | Lowercase keyword: "fishing", "beaches", "food", "hiking", "culture", "nightlife", "romance", "adventure", "wellness", "family", "wine", "surfing", "diving", "skiing", "photography", "luxury", "budget", "wildlife", "history" |
+    | theme | Lowercase category: "fishing", "beaches", "food", "hiking", "culture", "nightlife", "romance", "adventure", "wellness", "family", "wine", "surfing", "diving", "skiing", "photography", "luxury", "budget", "wildlife", "history" |
     | priority | See classification table below |
     | score | 0.0–1.0 numeric representation of priority |
     | confidence | 0.5 = ambiguous evidence, 0.95 = explicit clear statement |
     | user_evidence | Exact phrase from a user message — never paraphrase, never from assistant text |
     | destination_driver | true if this theme is what caused the user to choose (or search for) the destination |
+    | specific_activity | The exact activity the user named when it is more specific than the theme — e.g. theme="adventure" + specific_activity="paragliding", theme="fishing" + specific_activity="fly_fishing", theme="diving" + specific_activity="cave_diving". Null when the activity and theme are the same word (e.g. theme="surfing", specific_activity=null). |
     | desired_frequency | "once", "multiple_days", "daily", "throughout" — how often they want it |
 
     **Priority classification:**
@@ -808,12 +809,18 @@ trip_planning_agent = Agent(
     - Destination was already chosen before the theme was mentioned
     - The theme is a companion preference or something to include alongside the main purpose
 
-    **Example input:** "We want to go somewhere in Central America mostly for fishing, but my wife also wants nice restaurants and beaches."
-    **Correct trip_drivers output:**
+    **Example A — specific activity more granular than theme:**
+    Input: "best places for paragliding in the Alps, 3 days"
     [
-      {{"theme":"fishing","priority":"primary","score":0.88,"confidence":0.92,"user_evidence":"mostly for fishing","destination_driver":true,"desired_frequency":"multiple_days"}},
-      {{"theme":"food","priority":"important","score":0.60,"confidence":0.85,"user_evidence":"wife also wants nice restaurants","destination_driver":false,"desired_frequency":"daily"}},
-      {{"theme":"beaches","priority":"important","score":0.55,"confidence":0.80,"user_evidence":"wants nice... beaches","destination_driver":false,"desired_frequency":"once"}}
+      {{"theme":"adventure","priority":"exclusive","score":0.95,"confidence":0.95,"user_evidence":"best places for paragliding","destination_driver":true,"specific_activity":"paragliding","desired_frequency":"multiple_days"}}
+    ]
+
+    **Example B — activity IS the theme (no specific_activity needed):**
+    Input: "We want to go somewhere in Central America mostly for fishing, but my wife also wants nice restaurants and beaches."
+    [
+      {{"theme":"fishing","priority":"primary","score":0.88,"confidence":0.92,"user_evidence":"mostly for fishing","destination_driver":true,"specific_activity":null,"desired_frequency":"multiple_days"}},
+      {{"theme":"food","priority":"important","score":0.60,"confidence":0.85,"user_evidence":"wife also wants nice restaurants","destination_driver":false,"specific_activity":null,"desired_frequency":"daily"}},
+      {{"theme":"beaches","priority":"important","score":0.55,"confidence":0.80,"user_evidence":"wants nice... beaches","destination_driver":false,"specific_activity":null,"desired_frequency":"once"}}
     ]
 
     **Rules:**

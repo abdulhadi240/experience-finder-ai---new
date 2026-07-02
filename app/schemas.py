@@ -65,6 +65,7 @@ class TripDriver(BaseModel):
     confidence: float = Field(..., description="Confidence in this classification 0.0–1.0")
     user_evidence: str = Field(..., description="Exact phrase from a user message that justifies this priority — never from assistant text")
     destination_driver: bool = Field(..., description="True if this theme is what caused the user to choose (or search for) the destination")
+    specific_activity: Optional[str] = Field(None, description="The exact activity named by the user when it is more specific than the theme (e.g. theme='adventure', specific_activity='paragliding'). Null when the activity and theme are the same word.")
     desired_frequency: Optional[str] = Field(None, description="How often: 'once', 'multiple_days', 'daily', 'throughout'")
 
 
