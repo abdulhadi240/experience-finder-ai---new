@@ -1,0 +1,100 @@
+INFO:     Started server process [29784]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-07-02 20:19:37,805 INFO app.redis_history: [Redis RETRIEVED] thread=f4805bf9220141c3982f7b3cfc34d7bf | no history found
+2026-07-02 20:19:41,696 INFO app.rag: [RAG] INPUT
+{
+  "query": "top attractions in Kyoto Japan",
+  "reference": "hiptraveler",
+  "top_k": 8,
+  "category": "places",
+  "location": "Kyoto",
+  "filters": "couple",
+  "thread_id": "f4805bf9220141c3982f7b3cfc34d7bf"
+}
+2026-07-02 20:19:41,706 INFO app.rag: [GUIDE] INPUT
+{
+  "query": "top attractions in Kyoto Japan",
+  "reference": "hiptraveler",
+  "top_k": 8,
+  "location": "Kyoto",
+  "filters": "couple",
+  "thread_id": "f4805bf9220141c3982f7b3cfc34d7bf"
+}
+2026-07-02 20:19:44,057 INFO app.rag: [GUIDE] OUTPUT
+{
+  "query": "top attractions in Kyoto Japan",
+  "intent": "destination_guide",
+  "guides": [],
+  "satellite_regions": [],
+  "audience": [],
+  "travel_style": [],
+  "note": "Answer retrieved for detected country: JP",
+  "empty_reason": "no_results"
+}
+2026-07-02 20:19:44,358 INFO app.rag: [RAG] OUTPUT
+{
+  "query": "top attractions in Kyoto Japan",
+  "chunks": [
+    {
+      "rank": 1,
+      "id": "547403d6e4b0ea80d5fa693b",
+      "name": "Ginkakuji",
+      "type": "place",
+      "lat": 35.0272,
+      "lng": 135.7982,
+      "address": "2 Ginkakujicho, Sakyo, Kyoto, 606-8402",
+      "country": "JP",
+      "city": "Kyoto",
+      "region_code": "Kyoto",
+      "source": "viator",
+      "content": "Ginkakuji garden is famous for its cone shaped structure called the Kogetsudai or Moon Viewing Platform. Many people assume it is meant to resemble Mount Fuji, while others believe it is meant to reflect divine light into hearts of viewers…",
+      "tags": [
+        "PRIVATE AND LUXURY",
+        "ARCHITECTURE TOURS",
+        "PRIVATE SIGHTSEEING TOURS",
+        "NATURE WALKS",
+        "CITY TOURS",
+        "LIKELY TO SELL OUT",
+        "WALKING TOURS",
+        "ADDITIONAL FEES",
+        "MULTI-DAY TOURS",
+        "CULTURAL TOURS",
+        "BUS TOURS",
+        "SMALL GROUP",
+        "PORTS OF CALL TOURS",
+        "GINKAKU-JI TEMPLE (SILVER PAVILION)",
+        "BIKE TOURS",
+        "HALF-DAY TOURS",
+        "WORRY-FREE SHORE EXCURSION",
+        "EXCELLENT QUALITY",
+        "FULL-DAY TOURS",
+        "AUDIO GUIDES",
+        "DAY TRIPS",
+        "SHORE EXCURSIONS",
+        "TOP PRODUCT",
+        "HISTORICAL TOURS",
+        "BEST CONVERSION",
+        "NATURE AND WILDLIFE TOURS",
+        "OVERNIGHT TOURS",
+        "MOUNTAIN BIKE TOURS",
+        "RAIL TOURS",
+        "PUBLIC TRANSPORTATION TOURS",
+        "CAR TOURS",
+        "LOW SUPPLIER CANCELLATION RATE",
+        "LOW LAST MINUTE SUPPLIER CANCELLATION RATE"
+      ],
+      "image": "https://www.filepicker.io/api/file/23s75ptTQGGAiftww4xz",
+      "rating": 4.8,
+      "priceLevel": null
+    }
+  ],
+  "audience": [],
+  "travel_style": [],
+  "note": "Answer retrieved for detected country: JP",
+  "intent": "things_to_do",
+  "retrieval_confidence": "high",
+  "empty_reason": null
+}
+2026-07-02 20:19:44,967 INFO app.rag_cache: [RAG CACHE SET] ttl=600s | rag:hiptraveler:top attractions in kyoto japan:kyoto:places:8

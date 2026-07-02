@@ -1,8 +1,11 @@
 ﻿import asyncio
 import json
+import logging
 import re
 import time
 from typing import AsyncGenerator, Dict, Any, Optional
+
+_rag_log = logging.getLogger("app.rag")
 
 import httpx
 import pycountry
@@ -10,7 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from agents import Runner
 
-from .schemas import QueryRequest
+from .schemas import QueryRequest, TripDriver
 from .services import (
     _openai_client,
     get_complete_response,
@@ -239,10 +242,7 @@ async def rag(
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
-    print("\n" + "=" * 80)
-    print("[RAG /chat] >>> INPUT")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    print("=" * 80)
+    _rag_log.info("[RAG] INPUT\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
 
     try:
         response = await _rag_client.post(
@@ -256,10 +256,7 @@ async def rag(
         except json.JSONDecodeError:
             result = {"success": True, "data": response.text, "status_code": response.status_code}
 
-        print("\n" + "-" * 80)
-        print("[RAG /chat] <<< OUTPUT")
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        print("-" * 80 + "\n")
+        _rag_log.info("[RAG] OUTPUT\n%s", json.dumps(result, indent=2, ensure_ascii=False))
         return result
 
     except httpx.TimeoutException:
@@ -295,10 +292,7 @@ async def rag_guide(
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
-    print("\n" + "=" * 80)
-    print("[GUIDE /chat/guide] >>> INPUT")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    print("=" * 80)
+    _rag_log.info("[GUIDE] INPUT\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
 
     try:
         response = await _rag_client.post(
@@ -312,10 +306,7 @@ async def rag_guide(
         except json.JSONDecodeError:
             result = {"success": True, "data": response.text, "status_code": response.status_code}
 
-        print("\n" + "-" * 80)
-        print("[GUIDE /chat/guide] <<< OUTPUT")
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        print("-" * 80 + "\n")
+        _rag_log.info("[GUIDE] OUTPUT\n%s", json.dumps(result, indent=2, ensure_ascii=False))
         return result
 
     except httpx.TimeoutException:
@@ -535,7 +526,8 @@ async def _main_stream(
             response_content, timing_info = await get_complete_response(enriched, thread_id, param)
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+            plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
+            yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ──
             if not response_content.feedback:
                 asyncio.create_task(_redis_history.clear_conversation(thread_id))
@@ -774,7 +766,8 @@ async def _main_stream(
             response_content, timing_info = await get_complete_response(enriched, thread_id, param)
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            yield f"data: {json.dumps({'travel': [jsonable_encoder(response_content), jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
+            plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
+            yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ────────────────────────────
             if not response_content.feedback:
                 asyncio.create_task(_redis_history.clear_conversation(thread_id))

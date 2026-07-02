@@ -7,8 +7,9 @@ from agents import (
     Agent,
     WebSearchTool,
     set_default_openai_key,
-    handoffs , 
-    handoff 
+    handoffs,
+    handoff,
+    AgentOutputSchema,
 )
 from datetime import date
 
@@ -200,6 +201,7 @@ trip_planning_agent = Agent(
         themes: Optional[list[str]] = Field(None)
         pois: list[str] = Field(..., description="Explicitly mentioned POIs.")
         feedback: Optional[list[str]] = Field(None, description="List of missing fields to ask for.")
+        trip_drivers: Optional[list[TripDriver]] = Field(None, description="Intent priority drivers — see TRIP DRIVERS section. Extract from user messages only.")
     ```
 
     =====================================================================
@@ -768,6 +770,58 @@ trip_planning_agent = Agent(
     }}
 
     =====================================================================
+    🎯 TRIP DRIVERS — INTENT PRIORITY EXTRACTION
+    =====================================================================
+
+    `trip_drivers` captures WHY the user is making this trip and what matters most.
+
+    ⚠️ CRITICAL: Read ONLY "User:" messages for evidence. Never use the assistant's text.
+
+    Scan all user messages for travel theme signals. For every theme found, output:
+
+    | Field | What to fill |
+    |---|---|
+    | theme | Lowercase keyword: "fishing", "beaches", "food", "hiking", "culture", "nightlife", "romance", "adventure", "wellness", "family", "wine", "surfing", "diving", "skiing", "photography", "luxury", "budget", "wildlife", "history" |
+    | priority | See classification table below |
+    | score | 0.0–1.0 numeric representation of priority |
+    | confidence | 0.5 = ambiguous evidence, 0.95 = explicit clear statement |
+    | user_evidence | Exact phrase from a user message — never paraphrase, never from assistant text |
+    | destination_driver | true if this theme is what caused the user to choose (or search for) the destination |
+    | desired_frequency | "once", "multiple_days", "daily", "throughout" — how often they want it |
+
+    **Priority classification:**
+
+    | User says | priority | score |
+    |---|---|---|
+    | "maybe include [X] if there's time" / "could be fun" | incidental | 0.10–0.20 |
+    | "I like [X]" / "I enjoy [X]" / "I'd like some [X]" | preferred | 0.25–0.40 |
+    | "I want [X]" / "include [X]" / "make sure there's [X]" | important | 0.45–0.65 |
+    | "mainly for [X]" / "the trip is mostly about [X]" / "we want a destination with great [X]" | primary | 0.70–0.90 |
+    | "this trip is basically for [X]" / "where should I go for the best [X]?" / "[X] is the whole point" | exclusive | 0.90–1.00 |
+
+    **`destination_driver` = true when:**
+    - The user asked "where should I go for [X]?" — destination not yet chosen, theme drives selection
+    - The user says they want/chose a destination specifically BECAUSE it has great [X]
+    - The theme dominates the destination-selection intent ("best fishing destination")
+
+    **`destination_driver` = false when:**
+    - Destination was already chosen before the theme was mentioned
+    - The theme is a companion preference or something to include alongside the main purpose
+
+    **Example input:** "We want to go somewhere in Central America mostly for fishing, but my wife also wants nice restaurants and beaches."
+    **Correct trip_drivers output:**
+    [
+      {{"theme":"fishing","priority":"primary","score":0.88,"confidence":0.92,"user_evidence":"mostly for fishing","destination_driver":true,"desired_frequency":"multiple_days"}},
+      {{"theme":"food","priority":"important","score":0.60,"confidence":0.85,"user_evidence":"wife also wants nice restaurants","destination_driver":false,"desired_frequency":"daily"}},
+      {{"theme":"beaches","priority":"important","score":0.55,"confidence":0.80,"user_evidence":"wants nice... beaches","destination_driver":false,"desired_frequency":"once"}}
+    ]
+
+    **Rules:**
+    - Only include themes the user ACTUALLY expressed — do NOT infer or add generic themes
+    - If no themes are expressed, set trip_drivers to null or []
+    - NEVER add trip_drivers to the feedback list
+
+    =====================================================================
     📤 OUTPUT REQUIREMENTS
     =====================================================================
 
@@ -777,7 +831,7 @@ trip_planning_agent = Agent(
     """,
 
     model="gpt-5.4",
-    output_type=TripPlan,
+    output_type=AgentOutputSchema(TripPlan, strict_json_schema=False),
     handoff_description="Extracts trip plans. Handles date refusals and day ranges intelligently."
 )
 
@@ -1407,12 +1461,11 @@ GOOD (truly open-ended — user can answer anything):
   Turn 1 — ask EXACTLY 1 open-ended question:
   - DYNAMIC — specific to this destination and what they asked; never generic
   - OPEN-ENDED — no yes/no, no option lists
-  - About: what they value most, experiences they want, travel pace/style, what makes a trip click
   - NOT logistics: no dates, days, group size, or budget
-  Example areas (NEVER copy this wording):
-    • Have they been here before, or is this their first time?
-    • What's pulling them toward this place right now?
-    • When a trip really works, what does that feel like for them?
+  - ACTIVITY-AWARE RULE: scan the user's message for mentioned activities or themes.
+    • If they named 2+ activities with NO clear priority signal between them (e.g. "we enjoy hiking and food and culture") — make Q1 about priority: "You mentioned hiking, food, and culture — is one of those the main focus for you, or are you after a real mix of all three?"
+    • If priority is already obvious from their language ("mainly for X", "basically a fishing trip", "the whole point is surfing") — do NOT ask about priority. Ask something deeper about that theme instead (e.g. "When the food scene really works on a trip, what does that look like for you?").
+    • If no specific activities were mentioned — ask about overall values, pace, style, or what makes a trip click for them.
 
   Turn 2 — planning question only:
   Warmly acknowledge what you heard in one specific sentence, then offer to build the full itinerary for this city. Do NOT ask any more exploratory questions.
@@ -1593,16 +1646,21 @@ GOOD: "When a trip really clicks for you, what does that tend to look like?"
 
 Pick the scenario, phrase it yourself:
 
-- **City KNOWN — Turn 1**: Ask EXACTLY 1 open-ended question about travel mindset. DYNAMIC (specific to this destination), OPEN-ENDED (no yes/no, no lists), focused on what they value most/experiences they want/pace/style — NOT logistics.
+**ACTIVITY-AWARE Q1 RULE (applies to ALL Turn 1 scenarios):**
+- If the user named 2+ activities/themes with NO clear priority signal between them (e.g. "we enjoy hiking, food, and culture") — make Q1 about which matters most: "You mentioned hiking, food, and culture — is one of those the main focus, or are you after a real mix?"
+- If priority is already obvious from their phrasing ("mainly for X", "basically a surfing trip") — skip priority and ask something deeper about that theme.
+- If no activities were mentioned — ask about overall values, pace, or what makes a trip click.
+
+- **City KNOWN — Turn 1**: Ask EXACTLY 1 open-ended question. Apply the ACTIVITY-AWARE rule above. DYNAMIC, OPEN-ENDED (no yes/no, no lists), NOT logistics.
 - **City KNOWN — Turn 2**: Planning question only — acknowledge what you heard in one specific sentence, then offer to build the full itinerary. No more exploratory questions.
 
-- **City UNKNOWN — Turn 1**: Ask EXACTLY 1 open-ended question about travel mindset — same rules as City KNOWN. Do NOT ask which destination they want yet.
+- **City UNKNOWN — Turn 1**: Ask EXACTLY 1 open-ended question — apply the ACTIVITY-AWARE rule. Do NOT ask which destination they want yet.
 - **City UNKNOWN — Turn 2**: Planning question only — acknowledge what you heard, then ask which of the destinations you listed they want to plan around.
 
-- **Country / large region — Turn 1**: Ask EXACTLY 1 open-ended question about travel mindset. Do NOT ask which city/region yet.
+- **Country / large region — Turn 1**: Ask EXACTLY 1 open-ended question — apply the ACTIVITY-AWARE rule. Do NOT ask which city/region yet.
 - **Country / large region — Turn 2**: Planning question only — acknowledge what you heard, then ask which specific area or region pulls them most and offer to build once they name one.
 
-- **Destination comparison — Turn 1**: Ask EXACTLY 1 open-ended question. DYNAMIC, OPEN-ENDED, focused on mindset/values/travel philosophy/group dynamics/past trips/what success looks like — NOT logistics.
+- **Destination comparison — Turn 1**: Ask EXACTLY 1 open-ended question. DYNAMIC, OPEN-ENDED, focused on mindset/values/travel philosophy/group dynamics/past trips/what success looks like — NOT logistics. Apply the ACTIVITY-AWARE rule if activities were mentioned.
 - **Destination comparison — Turn 2**: Planning question only — acknowledge what you heard in one warm specific sentence, then either name the destination that fits and offer to plan it, or ask which of the two they want to focus on. No more exploratory questions.
 
 - **Safety / advisory:** ask what's motivating their trip so you can weigh risk or suggest a safer alternative.

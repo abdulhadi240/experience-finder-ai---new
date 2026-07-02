@@ -1,6 +1,6 @@
 # app/schemas.py
 from pydantic import BaseModel , Field
-from typing import Optional
+from typing import Optional, Literal
 
 
 class Interaction(BaseModel):
@@ -55,6 +55,19 @@ class global_travel_guardrail(BaseModel):
         
         
         
+class TripDriver(BaseModel):
+    """Structured intent driver — captures why a theme matters and how central it is."""
+    theme: str = Field(..., description="Travel theme (e.g. 'fishing', 'beaches', 'food', 'hiking')")
+    priority: Literal["incidental", "preferred", "important", "primary", "exclusive"] = Field(
+        ..., description="How central this theme is to the trip"
+    )
+    score: float = Field(..., description="Priority score 0.0–1.0: incidental≈0.15, preferred≈0.3, important≈0.55, primary≈0.8, exclusive≈0.95")
+    confidence: float = Field(..., description="Confidence in this classification 0.0–1.0")
+    user_evidence: str = Field(..., description="Exact phrase from a user message that justifies this priority — never from assistant text")
+    destination_driver: bool = Field(..., description="True if this theme is what caused the user to choose (or search for) the destination")
+    desired_frequency: Optional[str] = Field(None, description="How often: 'once', 'multiple_days', 'daily', 'throughout'")
+
+
 class Pax(BaseModel):
     """Represents the count of different types of travelers."""
     adults: int = Field(..., description="Number of adults. Infer from context: 'solo'/'alone'/'just me'=1, 'couple'/'romantic'/'two of us'=2, explicit number otherwise.")
@@ -78,6 +91,7 @@ class TripPlan(BaseModel):
     feedback: Optional[list[str]] = Field(None,description="Array of missing field names that require user input.")
     month: Optional[str] = Field(None, description="Month extracted from conversation")
     summary: str = Field(None, description="A friendly, conversational acknowledgement of the current input followed by a question asking for the items in the 'feedback' list.")
+    trip_drivers: Optional[list[TripDriver]] = Field(None, description="Structured intent drivers extracted from user messages only — see TRIP DRIVERS section")
     
     
     
