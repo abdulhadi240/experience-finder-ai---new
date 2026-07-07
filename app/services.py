@@ -393,52 +393,6 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
 
 # ─── Agent → Queue Streamer ──────────────────────────────────────
 
-# JSON string escapes we may encounter inside the "answer":"..." body.
-_JSON_SIMPLE_ESCAPES = {
-    '"': '"', '\\': '\\', '/': '/',
-    'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
-}
-
-
-def _json_unescape_partial(s: str) -> tuple[str, str]:
-    """
-    Decode JSON string escape sequences in `s`, streaming-safe.
-
-    Returns (decoded, carry) where `carry` is a trailing *incomplete* escape
-    sequence (a lone ``\\`` or a partial ``\\uAB``) that must be prepended to
-    the next chunk before decoding. This lets us decode a stream that may split
-    an escape across chunk boundaries without ever emitting a stray ``/`` (from
-    ``\\/``), backslash, or literal ``\\n``.
-    """
-    out = []
-    i, n = 0, len(s)
-    while i < n:
-        c = s[i]
-        if c != '\\':
-            out.append(c)
-            i += 1
-            continue
-        # Backslash — need at least one more char to know the escape.
-        if i + 1 >= n:
-            return ''.join(out), s[i:]          # dangling '\' → carry forward
-        e = s[i + 1]
-        if e == 'u':
-            if i + 6 > n:
-                return ''.join(out), s[i:]       # incomplete \uXXXX → carry
-            hexpart = s[i + 2:i + 6]
-            try:
-                out.append(chr(int(hexpart, 16)))
-                i += 6
-                continue
-            except ValueError:
-                out.append(e)                    # not valid hex, drop backslash
-                i += 2
-                continue
-        out.append(_JSON_SIMPLE_ESCAPES.get(e, e))
-        i += 2
-    return ''.join(out), ''
-
-
 async def stream_agent_to_queue(
     agent_name: str,
     final_message_with_ref: str,
@@ -480,7 +434,6 @@ async def stream_agent_to_queue(
         prefix_buf  = ""
         prefix_done = False
         suffix_buf  = ""
-        decode_carry = ""   # trailing incomplete JSON escape carried between chunks
 
         # Web search path: collect all emitted tokens so we can send them to the validator
         answer_parts = [] if agent_name == 'web_search_agent' else None
@@ -524,26 +477,21 @@ async def stream_agent_to_queue(
                     emit = pending[:-_SUFFIX_LEN]
                     emit = re.sub(r'\s*Source:\s*\S+', '', emit)
                     if emit:
-                        # JSON-unescape the body (\/ → /, \" → ", \n → newline …),
-                        # carrying any escape split across the chunk boundary.
-                        decoded, decode_carry = _json_unescape_partial(decode_carry + emit)
-                        if decoded:
-                            await queue.put(decoded)
-                            if answer_parts is not None:
-                                answer_parts.append(decoded)
+                        await queue.put(emit)
+                        if answer_parts is not None:
+                            answer_parts.append(emit)
                     suffix_buf = pending[-_SUFFIX_LEN:]
                 else:
                     suffix_buf = pending
 
         # Flush suffix
-        if suffix_buf or decode_carry:
+        if suffix_buf:
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             cleaned = re.sub(r'\s*Source:\s*\S+', '', cleaned)
-            decoded, _ = _json_unescape_partial(decode_carry + cleaned)
-            if decoded:
-                await queue.put(decoded)
+            if cleaned:
+                await queue.put(cleaned)
                 if answer_parts is not None:
-                    answer_parts.append(decoded)
+                    answer_parts.append(cleaned)
 
         # Web search path: now that the full answer is ready, send question + answer
         # to the validator so it researches only the places web search returned.
