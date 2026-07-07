@@ -964,7 +964,7 @@ Only reached if the query IS travel-related.
 **Read the INTENT of the user's CURRENT message (in context). Do NOT assume they are answering your last question — they may have switched intent entirely.** Classify what they want RIGHT NOW into ONE of three:
   (a) BUILD AN ITINERARY → isTravelRelated = true
   (b) GENERAL / EXPLORE question (recommendations, advice, preferences, narrowing) → isTravelRelated = false
-  (c) REALTIME info (safety, weather, prices, hours, news) → isTravelRelated = false (and isRealtime = true)
+  (c) LATEST / REALTIME info — the user explicitly wants the current state right now (breaking news, current safety "should I go now", live conditions today, current prices, current opening hours) → isTravelRelated = false (and isRealtime = true). See STEP 4; default is false.
 
 **isTravelRelated = true ONLY IF BOTH of these hold — this is a hard precondition:**
 1. **ONE single, specific destination is committed** — a single city or place the user has locked onto (e.g. "Tokyo", "Uluwatu"). A theme ("a surf trip"), a country with no city, or a LIST still being chosen from (e.g. 5 surf spots on the table) is NOT a committed destination.
@@ -1109,26 +1109,35 @@ Examples:
 
 ## STEP 4 — REALTIME INTENT (set isRealtime by MEANING, never by keyword)
 
-Decide isRealtime purely from INTENT. ⚠️ DEFAULT IS false. Set true ONLY when the answer is essentially worthless unless it reflects the CURRENT, possibly-changed-today state of the world. Wanting "good" or "fresh" recommendations is NOT enough — that's still evergreen.
+⚠️ DEFAULT IS false. isRealtime is a NARROW flag. Set it true ONLY when the user is explicitly asking about the **latest / current situation** of a place — information that could have literally changed in the last few days or weeks and would make a stable-knowledge answer WRONG or unsafe. If the question can be answered well from durable travel knowledge, it is false — even if a human *could* look up something fresher.
 
-**isRealtime = true** ONLY when the core of the answer is a live fact that changes day to day:
-- Safety / security: "should I go / is it safe / is it worth traveling there now", conflict, unrest, protests, war, crime trends, travel advisories
-- Current events / news: "what's happening", the present situation in a place right now
-- Weather / conditions: forecasts, "what's the weather", conditions now or for specific upcoming dates
-- Prices / costs: ticket prices, entry fees, exchange rates, "how much is X right now"
-- Operating status: opening hours, "open now", closures, strikes, whether something is currently running
-- Entry rules: visa / entry requirements, border status, health/entry rules
-- Time-pinned availability: specific events/festivals happening during a specific or near-term period
+**THE ONE TEST:** "Is the user asking me for the LATEST / RIGHT-NOW state of something (news, safety, current conditions), such that an answer written last month could now be incorrect?" If yes → true. If it's a normal travel question that has a stable answer → false.
 
-**isRealtime = false** — DEFAULT — for everything that draws on stable travel knowledge, INCLUDING:
-- ANY "best / top / good / must-see / things to do / where should I" recommendation query — e.g. "best surfing spots", "best vegan restaurants in LA", "top beaches in Bali", "things to do in Tokyo". These are evergreen even though a human could check fresh sources — our place database (RAG) should answer them.
-- Comparisons, itineraries, history, culture, cuisine, typical-season advice ("is autumn nice in Kyoto")
-- A bare destination name, or narrowing to one place from a list
-- The user's own preferences/memory
+**isRealtime = true** — only these genuine "latest info" intents:
+- Safety / "should I go now": "should I go to Iran now", "is it safe to travel to X right now", conflict, unrest, protests, war, active travel advisories, "is it worth going given what's happening". (These are ALSO isTravelRelated = false — the user wants an advisory, not an itinerary.)
+- Breaking news / current situation: "what's happening in X right now", "what's the situation in X", the present state of a place today.
+- Live conditions asked about explicitly for NOW / a specific near date: "what's the weather in Bali right now", "is it raining there today", a strike/closure happening now.
+- Live prices: current ticket/entry prices, exchange rates, "how much is X right now", "what does a ticket to X cost now", today's fares — anything asking the actual current price (these change constantly and must be looked up live). NOTE: a general budget/"how expensive is a trip" question is NOT this — see the false list.
+- Live opening hours / operating status: "is X open now", "what are X's opening hours", "is X open today / on Sundays", current closures — the concrete hours a place is operating right now.
 
-⚠️ A "best places / best restaurants / things to do" query is NEVER realtime, even if it mentions a city or "right now" loosely. Only flag realtime when the user is specifically asking about current conditions, safety, weather, prices, hours, news, or entry rules.
+**isRealtime = false** — DEFAULT — everything else, INCLUDING things that feel time-ish but have stable answers:
+- ANY "best / top / good / must-see / things to do / where should I / recommend" query — "best surfing spots", "best vegan restaurants in LA", "top beaches in Bali", "things to do in Tokyo". Evergreen — RAG answers these.
+- General weather/climate & seasons: "when's the best time to visit Japan", "is autumn nice in Kyoto", "what's the weather like in Bali" (typical climate, not a live forecast).
+- General budgets & "how expensive is X" trip-cost questions, visa/entry basics, general opening seasons — stable reference facts. (But an actual *current price* or *current hours* question IS realtime — see the true list.)
+- Comparisons, itineraries, history, culture, cuisine.
+- A bare destination name, or narrowing to one place from a list.
+- The user's own preferences/memory.
 
-Judge by intent: "How's Cairo these days?" = true (wants current state). "What's Cairo known for?" / "best things to do in Cairo" = false (evergreen). A safety/"should I travel" question is ALWAYS isRealtime = true AND isTravelRelated = false (it wants an advisory, not an itinerary).
+⚠️ Do NOT flag realtime just because a query mentions a city, "now", "these days", "currently", prices, hours, or weather in passing. The intent must genuinely be "tell me the LATEST/current state." When you are unsure whether a question needs fresh info → choose **false**.
+
+Judge by intent:
+- "should I go to Iran now?" → **true** (safety/latest; isTravelRelated = false)
+- "what's happening in Cairo right now?" → **true** (current situation)
+- "what's the weather in Bali today?" → **true** (live conditions, now)
+- "How's Cairo these days?" → **true** (wants current state)
+- "how much is a ticket to the Louvre right now?" / "what are the pyramids' opening hours?" / "is the Sagrada Familia open today?" → **true** (live price / current hours)
+- "what's the best time to visit Cairo?" / "best things to do in Cairo" / "what's Cairo known for" → **false** (evergreen)
+- "how much does a trip to Japan cost?" / "do I need a visa for Japan?" → **false** (general budget / stable reference)
 
 For isMemoryQuery = true, set isRealtime = false.
 
@@ -1138,7 +1147,7 @@ For isMemoryQuery = true, set isRealtime = false.
 
 ✓ Is the user asking about their own saved preferences or selections? (If yes → isMemoryQuery: true, skip all other steps)
 ✓ Did I analyze full intent, not just a keyword?
-✓ Would a correct answer depend on the CURRENT state of the world (safety, weather, prices, hours, news, "now")? → isRealtime = true. Otherwise false.
+✓ Is the user explicitly asking for the LATEST / right-now state (breaking news, current safety, live conditions today, current prices, current opening hours) such that a stable answer could now be wrong? → isRealtime = true. A normal travel question with a stable answer → false. When unsure → false.
 ✓ Does the query mention or imply a destination/travel context? (If yes → not OFF_TOPIC)
 ✓ Is the user asking for restaurant/hotel/activity recommendations with NO prior planning context in the conversation? (If yes → isTravelRelated = false)
 ✓ Did the user express planning intent ANYWHERE in the conversation history (not just the current message)? If planning intent exists in ANY prior message AND a destination is known AND the current message is neutral → isTravelRelated = true.
