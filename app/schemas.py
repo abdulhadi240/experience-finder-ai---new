@@ -1,5 +1,5 @@
 # app/schemas.py
-from pydantic import BaseModel , Field
+from pydantic import BaseModel , Field, model_validator
 from typing import Optional, Literal
 
 
@@ -11,8 +11,9 @@ class Interaction(BaseModel):
 class QueryRequest(BaseModel):
     """Model for incoming chat requests."""
     message: str
-    user_id: str
-    reference: str
+    user_id: str                    # logged-in user's userId, or the visitor's vId — see user_type
+    user_type: Optional[Literal["logged-in", "visitor"]] = None  # which kind of id user_id carries
+    reference: str                  # cId — client/site identifier (e.g. "hiptraveler")
     param: str
     threadId: Optional[str]
     old_interactions: Optional[list[Interaction]] = None
@@ -20,7 +21,29 @@ class QueryRequest(BaseModel):
     plan: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
     location: Optional[str] = None  # user location for destination-guide personalization
     filters: Optional[str] = None   # audience/style filter for destination-guide (e.g. "family")
-    
+    @model_validator(mode="after")
+    def _check_identity(self):
+        """user_id must be non-blank whenever the caller declares a user_type.
+
+        The credits service requires exactly one of userId/vId, so a blank
+        identifier here would come back as DENIED_INVALID_IDENTITY. Fail at our
+        own boundary instead, with a message that says which field is wrong.
+        """
+        if self.user_type and not (self.user_id or "").strip():
+            raise ValueError(f"user_id is required when user_type is '{self.user_type}'")
+        return self
+
+    @property
+    def credits_identity(self) -> tuple[Optional[str], Optional[str]]:
+        """Returns (userId, vId) for the credits API — exactly one is ever set.
+
+        Falls back to treating the caller as a visitor when user_type is absent,
+        so requests from a not-yet-updated frontend still resolve to one identity.
+        """
+        if self.user_type == "logged-in":
+            return self.user_id, None
+        return None, self.user_id
+
     
 class Output_Format(BaseModel):
     """Defines the desired output structure for the main agent."""

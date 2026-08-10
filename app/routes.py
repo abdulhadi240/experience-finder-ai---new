@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from .schemas import QueryRequest, UserCreateRequest
 from .memory import delete_user, create_new_user, get_user_memory_for_engage
 from .helpers import build_conversation_context, _main_stream, generate_engage_stream
+from .credits import new_request_id
 from . import redis_history
 
 router = APIRouter()
@@ -25,6 +26,17 @@ async def unified_chat(request: QueryRequest):
         thread_id = request.threadId or uuid.uuid4().hex
         param     = request.param
 
+        # One idempotency key per billable action (= per chat message), minted
+        # here and held for the whole request lifetime: the reserve retry and
+        # any later refund all reuse this exact value.
+        #
+        # Deliberately NOT accepted from the client. A replayed requestId comes
+        # back fromCache=true / allowed=true without decrementing, so anyone who
+        # could choose it could replay one id forever and get unlimited agent
+        # calls for a single credit — defeating the gate this endpoint exists to
+        # enforce. The key must stay server-controlled.
+        request_id = new_request_id()
+
         # ── Load conversation history from Redis keyed by thread_id ──
         history: list[dict] = await redis_history.fetch_recent_interactions(
             thread_id, limit=_REDIS_CTX_LIMIT
@@ -40,7 +52,8 @@ async def unified_chat(request: QueryRequest):
         final_message = build_conversation_context(request, history)
 
         return StreamingResponse(
-            _main_stream(request, thread_id, param, final_message, history=history),
+            _main_stream(request, thread_id, param, final_message, history=history,
+                         request_id=request_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

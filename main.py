@@ -2,11 +2,26 @@ import warnings
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="zep_cloud")
 
 import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-# Silence noisy third-party loggers — only Redis logs should appear
+# Only the credits logger emits INFO — everything else (app.agent, app.rag,
+# redis, and all third-party libraries) is held at WARNING so the credits
+# request/response trace is the only routine output.
+#
+# This silences rather than deletes: flip _LOG_ONLY_CREDITS to False to get the
+# full application logging back without touching any log statement.
+_LOG_ONLY_CREDITS = True
+
+logging.basicConfig(
+    level=logging.WARNING if _LOG_ONLY_CREDITS else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+# Third-party loggers set their own levels — pin them regardless of the mode.
 for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access", "zep_cloud", "hpack"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+# The one logger that stays verbose.
+logging.getLogger("app.credits").setLevel(logging.INFO)
 
 from dotenv import load_dotenv
 load_dotenv()  # loads .env into os.environ so redis_history.py can read REDIS_ENABLED, REDIS_URL etc.

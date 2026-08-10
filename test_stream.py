@@ -9,9 +9,11 @@ def stream_chat_response():
     payload = {
         "message": "best things to do in bali",
         "user_id": "user12113",
+        "user_type": "logged-in",
         "reference": "hiptraveler",
         "param": "explore",
-        "threadId": ""
+        "threadId": "",
+        "is_pro": False
     }
 
     headers = {

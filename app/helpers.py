@@ -29,6 +29,8 @@ from .memory import setup_user_session, add_message, get_user_memory_for_engage
 from .region_metadata import REGION_METADATA
 from . import redis_history as _redis_history
 from .rag_cache import build_rag_cache_key, get_rag_cache, set_rag_cache
+from . import credits as _credits
+from .config import settings as _settings
 import os
 import logging
 
@@ -36,6 +38,10 @@ _log = logging.getLogger("app.agent")
 
 _REDIS_TTL      = int(os.getenv("REDIS_TTL_SECONDS", "600"))
 _REDIS_MAX      = int(os.getenv("REDIS_OLD_INTERACTIONS_MAX", "30"))
+
+# Agent deadlines — a hang must surface as a refundable timeout, not silence.
+_AGENT_TIMEOUT       = _settings.agent_timeout_seconds
+_AGENT_TOKEN_TIMEOUT = _settings.agent_token_timeout_seconds
 
 
 # ─── Real-time query detector ─────────────────────────────────────
@@ -500,11 +506,59 @@ async def _main_stream(
     param: str,
     final_message: str,
     history: list[dict] | None = None,
+    request_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
 
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
+
+    # ── CREDITS GATE — the enforcement boundary ──────────────────
+    # Sits above every billable path in this function: the plan fast-path, the
+    # trip-planning branch, and the streaming agent. Also above the middleware
+    # LLM calls (validation, loaders, RAG, PII), so an out-of-credits user costs
+    # zero OpenAI spend. Emitted after [STARTED] so TTFB stays unchanged.
+    #
+    # usageType is derived from the request, not from the validation agent's
+    # verdict, because that verdict does not exist yet at this point. A message
+    # sent with param="explore" that later routes to trip planning is therefore
+    # billed as EXPLORE_TRAVEL. Harmless if the two share a credit pool; if they
+    # do not, that branch needs a refund + re-reserve. Open question with HT.
+    _request_id = request_id or _credits.new_request_id()
+    _usage_type = _credits.usage_type_for(param, bool(request.plan))
+    # is_pro is client-supplied and forgeable — it must never skip this call.
+    # The credits service is the only authority on entitlement.
+    _reservation = await _credits.reserve(
+        user_id=request.user_id,
+        user_type=request.user_type,
+        c_id=request.reference,
+        usage_type=_usage_type,
+        request_id=_request_id,
+    )
+
+    def _refund_task():
+        """Hand the credit back — charged, but the user got no agent output."""
+        return asyncio.create_task(_credits.refund_safe(
+            user_id=request.user_id,
+            user_type=request.user_type,
+            c_id=request.reference,
+            usage_type=_usage_type,
+            request_id=_request_id,
+        ))
+
+    if not _reservation.allowed:
+        _blocked_message = _reservation.user_message
+        yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
+        for i, word in enumerate(_blocked_message.split()):
+            yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
+        yield f"data: {json.dumps({'content': '\"}'})}\n\n"
+        yield f"data: {json.dumps({'credits_blocked': True, 'reason': _reservation.reason_code, 'remaining': _reservation.remaining, 'upgrade_prompt': not _reservation.transport_failed})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'blocked': True, 'reason': _reservation.reason_code, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"
+        return
+
+    # Let the frontend refresh its "X messages left" counter from the authority.
+    if _reservation.remaining is not None:
+        yield f"data: {json.dumps({'credits_remaining': _reservation.remaining})}\n\n"
 
     # ── Save user question to Zep — always, non-blocking, never gates anything ──
     if request.user_id:
@@ -523,7 +577,11 @@ async def _main_stream(
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
-            response_content, timing_info = await get_complete_response(enriched, thread_id, param)
+            # Deadline: a hung planner would otherwise never refund or respond.
+            # TimeoutError is an Exception, so the handler below refunds it.
+            response_content, timing_info = await asyncio.wait_for(
+                get_complete_response(enriched, thread_id, param), timeout=_AGENT_TIMEOUT
+            )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
@@ -539,7 +597,10 @@ async def _main_stream(
                     max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
                 ))
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            _refund_task()  # trip plan hard-failed — user got nothing
+            # TimeoutError stringifies to "" — fall back to the class name so
+            # the client never receives a blank error.
+            yield f"data: {json.dumps({'error': str(e) or type(e).__name__})}\n\n"
         return
 
     # ── Detect follow-up reply — skip RAG when user is answering a mindset question ──
@@ -656,6 +717,7 @@ async def _main_stream(
     except Exception:
         scope_error = None
     if scope_error:
+        _refund_task()  # blocked by our own scope gate — no agent output delivered
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(scope_error.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
@@ -669,6 +731,7 @@ async def _main_stream(
     except Exception:
         pii_detected = False
     if pii_detected:
+        _refund_task()  # blocked by our own PII check — no agent output delivered
         pii_message = (
             "To keep your information safe, please avoid sharing personal details "
             "like phone numbers, email addresses, or ID numbers in your messages. "
@@ -718,6 +781,7 @@ async def _main_stream(
 
     # ── Validation check ─────────────────────────────────────────
     if isinstance(validation_result, Exception):
+        _refund_task()  # validation blew up — no agent output delivered
         yield f"data: {json.dumps({'error': str(validation_result)})}\n\n"
         return
 
@@ -726,6 +790,7 @@ async def _main_stream(
             and validation_result is not None
             and not isinstance(validation_result, Exception)
             and not validation_result.final_output.isValid):
+        _refund_task()  # blocked as non-travel — no agent output delivered
         solution = validation_result.final_output.solution
         if len(solution) < 50:
             solution = "Let's keep it travel-focused. What would you like to explore next?"
@@ -763,7 +828,11 @@ async def _main_stream(
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
-            response_content, timing_info = await get_complete_response(enriched, thread_id, param)
+            # Deadline: a hung planner would otherwise never refund or respond.
+            # TimeoutError is an Exception, so the handler below refunds it.
+            response_content, timing_info = await asyncio.wait_for(
+                get_complete_response(enriched, thread_id, param), timeout=_AGENT_TIMEOUT
+            )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
@@ -779,7 +848,10 @@ async def _main_stream(
                     max_items=_REDIS_MAX, ttl_seconds=_REDIS_TTL,
                 ))
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            _refund_task()  # trip plan hard-failed — user got nothing
+            # TimeoutError stringifies to "" — fall back to the class name so
+            # the client never receives a blank error.
+            yield f"data: {json.dumps({'error': str(e) or type(e).__name__})}\n\n"
         return
 
     # ── Explore / General (isTravelRelated=False) ─────────────────
@@ -953,10 +1025,40 @@ async def _main_stream(
     answer_prefix_sent = False
 
     while True:
-        token = await token_queue.get()
+        try:
+            # A hung agent must not park the client forever. Timing out here is
+            # what turns a hang into a refundable hard-fail rather than silence.
+            token = await asyncio.wait_for(
+                token_queue.get(), timeout=_AGENT_TOKEN_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            _log.error(
+                "[AGENT] no token for %.0fs — treating as hard-fail | requestId=%s",
+                _AGENT_TOKEN_TIMEOUT, _request_id,
+            )
+            if not redis_answer_parts:
+                _refund_task()
+            yield f"data: {json.dumps({'error': 'agent_timeout'})}\n\n"
+            stream_error = True
+            break
+        except (asyncio.CancelledError, GeneratorExit):
+            # Client hung up. If nothing was delivered the charge is unearned;
+            # a partially streamed answer counts as delivered.
+            if not redis_answer_parts:
+                _log.warning(
+                    "[CREDITS] client disconnected before output — refunding | requestId=%s",
+                    _request_id,
+                )
+                _refund_task()
+            raise
         if token is None:
             break
         if isinstance(token, Exception):
+            # Hard-fail from the agent. Refund only when nothing was delivered —
+            # a stream that already emitted tokens produced usable output, and
+            # low-quality-but-valid output is explicitly not refundable.
+            if not redis_answer_parts:
+                _refund_task()
             yield f"data: {json.dumps({'error': str(token)})}\n\n"
             stream_error = True
             break
@@ -965,6 +1067,12 @@ async def _main_stream(
             yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         yield f"data: {json.dumps({'content': token})}\n\n"
         redis_answer_parts.append(token)
+
+    # Stream ended cleanly but emitted nothing — a safety block or an empty
+    # completion. The user received no usable output, so the charge is unearned.
+    if not stream_error and not redis_answer_parts:
+        _log.warning("[CREDITS] agent produced no output — refunding | requestId=%s", _request_id)
+        _refund_task()
 
     yield f"data: {json.dumps({'content': '\"}'})}\n\n"
     yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'threadId': thread_id, 'param': param})}\n\n"

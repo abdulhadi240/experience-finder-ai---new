@@ -23,6 +23,7 @@ def send(message: str, thread_id: str = "", reference: str = "hiptraveler") -> d
     payload = {
         "message":   message,
         "user_id":   "test_user_flows",
+        "user_type": "logged-in",
         "reference": reference,
         "param":     "explore",
         "threadId":  thread_id,
