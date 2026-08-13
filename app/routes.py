@@ -38,16 +38,11 @@ async def unified_chat(request: QueryRequest):
         request_id = new_request_id()
 
         # ── Load conversation history from Redis keyed by thread_id ──
+        # Redis is now the only source of history — the frontend no longer
+        # supplies old_interactions as a fallback.
         history: list[dict] = await redis_history.fetch_recent_interactions(
             thread_id, limit=_REDIS_CTX_LIMIT
         )
-
-        # Fallback: if Redis returned nothing, use old_interactions from frontend
-        if not history and request.old_interactions:
-            history = [
-                {"question": item.question, "answer": item.answer}
-                for item in request.old_interactions[-_REDIS_CTX_LIMIT:]
-            ]
 
         final_message = build_conversation_context(request, history)
 

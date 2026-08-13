@@ -1,13 +1,8 @@
 # app/schemas.py
-from pydantic import BaseModel , Field, model_validator
+from pydantic import BaseModel , Field, field_validator, model_validator
 from typing import Optional, Literal
 
 
-class Interaction(BaseModel):
-    question: str
-    answer: str
-    
-    
 class QueryRequest(BaseModel):
     """Model for incoming chat requests."""
     message: str
@@ -16,11 +11,8 @@ class QueryRequest(BaseModel):
     reference: str                  # cId — client/site identifier (e.g. "hiptraveler")
     param: str
     threadId: Optional[str]
-    old_interactions: Optional[list[Interaction]] = None
     is_pro: Optional[bool] = False
     plan: Optional[bool] = False   # if True: save & retrieve conversation memory via Zep
-    location: Optional[str] = None  # user location for destination-guide personalization
-    filters: Optional[str] = None   # audience/style filter for destination-guide (e.g. "family")
     @model_validator(mode="after")
     def _check_identity(self):
         """user_id must be non-blank whenever the caller declares a user_type.
@@ -94,10 +86,23 @@ class TripDriver(BaseModel):
 
 class Pax(BaseModel):
     """Represents the count of different types of travelers."""
-    adults: int = Field(..., description="Number of adults. Infer from context: 'solo'/'alone'/'just me'=1, 'couple'/'romantic'/'two of us'=2, explicit number otherwise.")
+    adults: int = Field(0, description="Number of adults. Infer from context: 'solo'/'alone'/'just me'=1, 'couple'/'romantic'/'two of us'=2, explicit number otherwise. 0 if the user gave a group but never implied how many adults.")
     children: int = Field(0, description="Number of children.")
     infants: int = Field(0, description="Number of infants (babies).")
     elderly: int = Field(0, description="Number of elderly travelers.")
+
+    @field_validator("adults", "children", "infants", "elderly", mode="before")
+    @classmethod
+    def _null_count_is_zero(cls, v):
+        """The planner emits null (not 0) for counts the user never mentioned.
+
+        Every count is contractually an integer for the frontend, so a null
+        collapses to 0 rather than being rejected or dropped: a validation
+        error here loses the whole trip plan over a field the user never
+        talked about, and exclude_none would strip a null key entirely.
+        0 reads as 'none of these travellers', which is what null meant.
+        """
+        return 0 if v is None else v
 
 class TripPlan(BaseModel):
     """The structured DTO for an extracted trip plan."""
@@ -116,6 +121,22 @@ class TripPlan(BaseModel):
     month: Optional[str] = Field(None, description="Month extracted from conversation")
     summary: str = Field(None, description="A friendly, conversational acknowledgement of the current input followed by a question asking for the items in the 'feedback' list.")
     trip_drivers: Optional[list[TripDriver]] = Field(None, description="Structured intent drivers extracted from user messages only — see TRIP DRIVERS section")
+
+    @field_validator("destinations", "pois", mode="before")
+    @classmethod
+    def _null_list_is_empty(cls, v):
+        """Explicit null on a required list means 'nothing named yet', not an error."""
+        return [] if v is None else v
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _null_summary_is_blank(cls, v):
+        """summary is typed str but defaults to None, so an explicit null would fail.
+
+        Callers only test it for truthiness, so "" carries the same meaning
+        without costing us the whole plan.
+        """
+        return "" if v is None else v
     
     
     

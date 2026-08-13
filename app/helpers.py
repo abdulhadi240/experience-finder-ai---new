@@ -616,11 +616,9 @@ async def _main_stream(
         # One nano call parses the message into a full structured payload
         # (query/category/top_k/location/filters); it then feeds both retrieval
         # endpoints, fired in parallel. Same single nano round-trip as before.
-        p = await build_rag_payload(
-            final_message,
-            fallback_location=request.location or "",
-            fallback_filters=request.filters or "",
-        )
+        # location/filters are no longer sent by the frontend — the nano call
+        # infers both from the message itself, with no fallback to fall back to.
+        p = await build_rag_payload(final_message)
         # ── Redis cache check — skip RAG endpoint calls on hit ──
         _cache_key = build_rag_cache_key(
             p["query"], p["location"], p["category"], p["top_k"], request.reference
