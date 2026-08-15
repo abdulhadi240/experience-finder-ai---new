@@ -39,3 +39,5 @@ Thumbs.db
 # Database / SQLite files
 *.db
 *.sqlite3
+
+.claude
