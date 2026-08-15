@@ -134,7 +134,10 @@ def run():
             failures.append(f"{label}: closing does not end with '?' -> {c!r}")
         if shape == "A" and dest and not names:
             failures.append(f"{label}: shape A must name '{dest}' -> {c!r}")
-        if shape == "B" and not (has_explore or re.search(r"which", c, re.I)):
+        # Shape B is satisfied by "which of these", a keep-exploring branch, or
+        # an explicit choice between named destinations ("...to Lisbon, Porto, or Split?").
+        multi_choice = bool(re.search(r"[A-Z][\w'\-]+(,\s*[A-Z][\w'\-]+)+,?\s+or\s+[A-Z][\w'\-]+", c))
+        if shape == "B" and not (has_explore or multi_choice or re.search(r"which", c, re.I)):
             failures.append(f"{label}: shape B must ask which / offer to keep exploring -> {c!r}")
         results.append((label, c))
 

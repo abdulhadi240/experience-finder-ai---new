@@ -99,6 +99,27 @@ _PERSONAL_OPENER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Every explore closing now ends by offering to start planning, so the most
+# common short reply is an ACCEPTANCE ("yeah lets plan it") rather than an
+# answer to a preference question. Those are BUILD instructions and must reach
+# the validation agent — routing them into FOLLOW_UP_MODE re-asks the planning
+# question forever. The agent still requires ONE committed destination, so a
+# vague "yes" to a multi-destination list is clarified there, not planned blind.
+_ACCEPTANCE_STARTS = re.compile(
+    r"^\s*(yes|yeah|yea|yep|yup|sure|ok|okay|alright|absolutely|definitely|"
+    r"sounds\s+(good|great|perfect)|perfect|great|awesome|please|go\s+ahead|"
+    r"do\s+it|let'?s\s+(plan|do|go|build|start)|plan\s+it|build\s+it)\b",
+    re.IGNORECASE,
+)
+_PLANNING_INTENT_RE = re.compile(
+    r"\b(plan|build)\s+it\b"
+    r"|\bstart\s+planning\b"
+    r"|\blet'?s\s+plan\b"
+    r"|\b(plan|build|create|make)\s+(the|my|our|this)\s+(trip|itinerary)\b"
+    r"|\b(trip|itinerary)\s+around\s+that\b",
+    re.IGNORECASE,
+)
+
 
 def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
     """
@@ -121,6 +142,12 @@ def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
 
     msg = message.strip()
     msg_lower = msg.lower()
+
+    # Accepting the planning offer -> NOT a preference answer. A bare "yes" is
+    # only an acceptance when it's short; a long one ("yes, I love food markets
+    # and slow mornings...") is still someone answering the preference half.
+    if _PLANNING_INTENT_RE.search(msg) or (_ACCEPTANCE_STARTS.match(msg) and len(msg) <= 60):
+        return False
 
     # Strong travel-query signals -> treat as a new query, not a reply
     if any(msg_lower.startswith(q) for q in _QUERY_STARTS_FOLLOWUP):
