@@ -587,8 +587,10 @@ async def _main_stream(
     if _reservation.remaining is not None:
         yield f"data: {json.dumps({'credits_remaining': _reservation.remaining})}\n\n"
 
-    # ── Save user question to Zep — always, non-blocking, never gates anything ──
-    if request.user_id:
+    # ── Save user question to Zep — non-blocking, never gates anything ──
+    # Skipped entirely while long-term memory is off: with the feature parked
+    # we should not keep accruing a cross-session profile we do not read.
+    if _settings.zep_enabled and request.user_id:
         async def _save_to_zep():
             try:
                 await asyncio.to_thread(setup_user_session, request.user_id, thread_id)
@@ -928,11 +930,19 @@ async def _main_stream(
             f"- known_for / highlights: what makes it worth visiting — reference these when describing the destination's identity.\n"
             f"- activities: use the name, intensity, duration, and bestSeasons of each activity to give concrete nuanced descriptions "
             f"(e.g. 'best in spring', 'full-day commitment', 'moderate intensity'). This makes POI descriptions specific, not generic.\n"
-            f"- characteristics (pace, climate, familyFriendly, averageDailyBudget, recommendedMaxDays): weave into practical advice — "
-            f"pacing suggestions, who the destination suits, rough budget framing, how many days it rewards.\n"
+            f"- characteristics (pace, climate, familyFriendly, averageDailyBudget): weave into practical advice — "
+            f"climate notes and rough budget framing. NEVER state who the destination 'suits' as though this user "
+            f"belongs to that group.\n"
+            f"- recommendedMaxDays: IGNORE unless the user has stated a trip length or asked how long to stay. "
+            f"Never open with, or volunteer, a suggested number of days.\n"
             f"- itinerary_hints: use mobility notes and logistics tips in your practical closing section.\n"
-            f"- best_months / travel_styles: reference when discussing timing or matching the user's stated travel style.\n"
+            f"- best_months: reference only when the user asked about timing or named a month/season.\n"
+            f"- travel_styles: IGNORE unless the user has already stated their travel style or occasion. This field "
+            f"describes the DESTINATION, not this user — it is not permission to label their trip.\n"
             f"- practical (language, timezone): mention when useful for first-time visitors.\n\n"
+            f"⚠ NO-ASSUMPTION RULE: this data describes the DESTINATION, never the user. Do not use it to infer "
+            f"the occasion, travel style, party composition, budget level or trip length of THIS user's trip. "
+            f"If the user has not said it, you do not know it.\n\n"
             f"STRUCTURE RULE: guide data should inform the BODY of your response, not just bookend sentences. "
             f"Every POI description and practical tip should be richer because of this data.\n\n"
             f"{json.dumps(guide_result)}\n"
@@ -1001,11 +1011,36 @@ async def _main_stream(
 
 
 
+    # ── Favouriting nudge — FIRST response of a conversation only ──
+    # Gated on empty history here rather than asking the model to work out which
+    # turn it is: that guarantees exactly one appearance per conversation, which
+    # is the whole point — an onboarding hint, not a recurring pitch.
+    # Sits before the closing question so RULE ZERO (every closing offers planning
+    # and ends with "?") still holds.
+    if not history:
+        final_message_with_ref += (
+            "\n\n[FAVOURITING_HINT — FIRST RESPONSE ONLY]\n"
+            "If your response includes a <POIS> block, add ONE short sentence after it and "
+            "BEFORE your closing question, telling the user what favouriting is for: saving "
+            "the places that appeal to them so the trip gets built around their own picks.\n"
+            "- Give the BENEFIT, not the mechanic — why it helps them, not where the button is.\n"
+            "- Max ~20 words. One plain sentence, not a bullet, not a heading, not pushy.\n"
+            "- Write it fresh in your own words. Never copy this wording.\n"
+            "- It must NOT be your closing line: the closing is still the planning question ending in '?'.\n"
+            "- If there is no <POIS> block, omit this entirely.\n"
+            "[/FAVOURITING_HINT]"
+        )
+
     final_message_with_ref += (
         "\n\n[INSTRUCTION] "
         "NEVER start with: 'I am HipTraveler', 'I\u2019m HipTraveler', 'Your name is', 'Hi', 'Hello', or any self-introduction or greeting. "
         "Jump directly into the content — bullet list, facts, or answer body. "
         "If the user only greeted you or shared their name, respond with a single short question about their travel plans. "
+        "NEVER assume trip details the user has not stated — no occasion (romantic, honeymoon, family, "
+        "business), no trip length or number of days, no party size, no budget level, no travel style. "
+        "Do not open with a framing like 'for a romantic trip, 3-4 days is ideal' when the user only named "
+        "a destination: answer the question they actually asked about the place itself. If such a detail "
+        "would genuinely improve the answer, ASK for it in your closing question instead of inventing it. "
         "If [USER_PREFERENCES] data is present and the query is about preferences, answer specifically from that data. [/INSTRUCTION]"
     )
 

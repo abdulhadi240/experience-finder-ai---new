@@ -9,6 +9,7 @@ from .schemas import QueryRequest, UserCreateRequest
 from .memory import delete_user, create_new_user, get_user_memory_for_engage
 from .helpers import build_conversation_context, _main_stream, generate_engage_stream
 from .credits import new_request_id
+from .config import settings
 from . import redis_history
 
 router = APIRouter()
@@ -93,6 +94,13 @@ async def memory_engage(user_id: str = Query(..., description="The user's ID")):
     """
     Stream a personalised re-engagement question token by token.
     Fetches Zep user summary, then streams gpt-4.1-nano output as SSE.
+
+    With long-term memory off this is a no-op: no summary is fetched and the
+    stream closes immediately, so the UI shows no "welcome back" prompt built
+    from a past session. Kept mounted so the frontend does not 404 mid-rollout.
     """
+    if not settings.zep_enabled:
+        return StreamingResponse(generate_engage_stream(""), media_type="text/event-stream")
+
     context = await asyncio.to_thread(get_user_memory_for_engage, user_id)
     return StreamingResponse(generate_engage_stream(context), media_type="text/event-stream")

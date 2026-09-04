@@ -7,7 +7,16 @@ class Settings(BaseSettings):
     # Required keys
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     model: str = "gpt-4o"
-    zep_api_key: str = Field(alias="ZEP_API_KEY")
+
+    # ── Zep long-term memory ──────────────────────────────────────
+    # OFF by default. Cross-session memory let the assistant assume trip
+    # preferences the user never stated in the current conversation, so the
+    # feature is parked until it can reappear as explicit, user-chosen travel
+    # profiles (Business / Romantic / Family / Friends) rather than silent
+    # recall. Flip to true only to re-enable the whole memory surface.
+    zep_enabled: bool = Field(default=False, alias="ZEP_ENABLED")
+    # Optional now: with memory off, a deployment need not carry the key.
+    zep_api_key: str | None = Field(default=None, alias="ZEP_API_KEY")
 
     # Optional keys
     supabase_url: str | None = Field(default=None, alias="SUPABASE_URL")
