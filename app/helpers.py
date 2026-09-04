@@ -1015,14 +1015,16 @@ async def _main_stream(
     # Gated on empty history here rather than asking the model to work out which
     # turn it is: that guarantees exactly one appearance per conversation, which
     # is the whole point — an onboarding hint, not a recurring pitch.
-    # Sits before the closing question so RULE ZERO (every closing offers planning
-    # and ends with "?") still holds.
+    # Lands in the opening paragraph, above the POI list, so the user knows
+    # what to do with the list before reading it — and well clear of the closing
+    # question, so RULE ZERO (every closing offers planning, ends with "?") holds.
     if not history:
         final_message_with_ref += (
             "\n\n[FAVOURITING_HINT — FIRST RESPONSE ONLY]\n"
-            "If your response includes a <POIS> block, add ONE short sentence after it and "
-            "BEFORE your closing question, telling the user what favouriting is for: saving "
-            "the places that appeal to them so the trip gets built around their own picks.\n"
+            "If your response includes a <POIS> block, close your OPENING PARAGRAPH with ONE short "
+            "sentence — above the <POIS> block, not after it — telling the user what favouriting is "
+            "for: saving the places that appeal to them so the trip gets built around their own picks.\n"
+            "- It belongs in the TOP paragraph, so the user knows what to do with the list BEFORE reading it.\n"
             "- Give the BENEFIT, not the mechanic — why it helps them, not where the button is.\n"
             "- Max ~20 words. One plain sentence, not a bullet, not a heading, not pushy.\n"
             "- Write it fresh in your own words. Never copy this wording.\n"
