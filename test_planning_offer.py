@@ -1,8 +1,10 @@
 """
-Checks RULE ZERO: every explore closing must explicitly offer to start planning.
+Checks RULE ZERO: turn 1 must invite the user to heart/favorite their picks (Shape C);
+the "start planning" offer only appears from turn 2 onward.
 
-Shape A (one destination): "...share more..., or shall we start planning your trip to X?"
-Shape B (many destinations): "which of these would you like to plan a trip to - or keep exploring?"
+Shape A (one destination, turn 2+): "...share more..., or shall we start planning your trip to X?"
+Shape B (many destinations, turn 2+): "which of these would you like to plan a trip to - or keep exploring?"
+Shape C (turn 1): "...heart the ones you like, and we'll use your favorites to shape your itinerary."
 """
 import json, re, sys, time, uuid
 import requests
@@ -24,6 +26,14 @@ OFFER_RE = re.compile(
     re.I,
 )
 EXPLORE_RE = re.compile(r"keep exploring|keep looking|explore (more|further)|narrow (it|things) down", re.I)
+
+# Turn 1: an invitation to heart/favorite picks so they shape the itinerary.
+FAVORITE_RE = re.compile(
+    r"(heart|favorite|favourite)[^.?!]{0,60}?(like|love|pick|option|one)"
+    r"|"
+    r"(favorite|favourite)s?[^.?!]{0,45}?(shape|build|create|inform|guide)[^.?!]{0,20}?(itinerary|trip|plan)",
+    re.I,
+)
 
 # A continent/region is never one plannable destination.
 REGIONS = (r"Europe|Asia|Southeast Asia|South America|Central America|North America|Africa|"
@@ -93,53 +103,75 @@ def closing_of(answer):
 
 
 CASES = [
-    # (label, query, expected_shape, destination that must be named for shape A)
-    ("A1 city",        "best things to do in Barcelona",                     "A", "Barcelona"),
-    ("A2 city",        "what should I see in Kyoto",                         "A", "Kyoto"),
-    ("A3 country",     "top things to do in Portugal",                       "either", "Portugal"),
-    ("B1 open",        "I want to travel somewhere in Europe but not sure where yet", "B", None),
-    ("B2 compare",     "Tokyo or Seoul - which should I visit?",             "B", None),
-    ("A4 safety",      "is it safe to travel to Colombia right now?",        "either", "Colombia"),
-    ("A5 visa",        "do I need a visa for Vietnam?",                      "either", "Vietnam"),
-    ("B3 list",        "best surf destinations in Central America",          "B", None),
+    # (label, query, expected_turn2_shape, destination that must be named for shape A, turn2 follow-up)
+    ("A1 city",        "best things to do in Barcelona",                     "A", "Barcelona", "I like museums and food"),
+    ("A2 city",        "what should I see in Kyoto",                         "A", "Kyoto", "I love temples and quiet spots"),
+    ("A3 country",     "top things to do in Portugal",                       "either", "Portugal", "I'm into beaches"),
+    ("B1 open",        "I want to travel somewhere in Europe but not sure where yet", "B", None, "I like warm weather and nightlife"),
+    ("B2 compare",     "Tokyo or Seoul - which should I visit?",             "B", None, "I care most about food"),
+    ("A4 safety",      "is it safe to travel to Colombia right now?",        "either", "Colombia", "I'm visiting family there"),
+    ("A5 visa",        "do I need a visa for Vietnam?",                      "either", "Vietnam", "traveling for two weeks"),
+    ("B3 list",        "best surf destinations in Central America",          "B", None, "I'm a beginner surfer"),
 ]
 
 
 def run():
     results, failures = [], []
-    for label, q, shape, dest in CASES:
+    for label, q, shape, dest, followup in CASES:
         t0 = time.time()
         try:
-            r = send(q)
+            r1 = send(q)
         except Exception as e:
-            failures.append(f"{label}: REQUEST ERROR {e}")
+            failures.append(f"{label}: REQUEST ERROR (turn1) {e}")
             print(f"\n[{label}] ERROR {e}")
             continue
-        c = closing_of(r["answer"])
-        has_offer = bool(OFFER_RE.search(c))
-        has_explore = bool(EXPLORE_RE.search(c))
-        names = bool(dest and re.search(re.escape(dest), c, re.I))
-        ends_q = c.endswith("?")
+        c1 = closing_of(r1["answer"])
+        has_favorite = bool(FAVORITE_RE.search(c1))
+        has_offer_early = bool(OFFER_RE.search(c1))
 
-        print(f"\n[{label}] ({time.time()-t0:.0f}s) {q}")
-        print(f"  closing: {c}")
-        collapsed = bool(REGION_COLLAPSE_RE.search(c))
+        print(f"\n[{label}-turn1] ({time.time()-t0:.0f}s) {q}")
+        print(f"  closing: {c1}")
+        print(f"  favorite_invite={has_favorite} premature_offer={has_offer_early}")
+
+        if not has_favorite:
+            failures.append(f"{label} turn1: NO FAVORITE/HEART INVITE in closing (Shape C) -> {c1!r}")
+        if has_offer_early:
+            failures.append(f"{label} turn1: premature 'start planning' offer before favoriting -> {c1!r}")
+
+        # Turn 2: user shares preferences -> Shape A/B "start planning" offer should now appear.
+        t1 = time.time()
+        try:
+            r2 = send(followup, thread_id=r1["thread"])
+        except Exception as e:
+            failures.append(f"{label}: REQUEST ERROR (turn2) {e}")
+            print(f"  [turn2] ERROR {e}")
+            results.append((label, c1))
+            continue
+        c2 = closing_of(r2["answer"])
+        has_offer = bool(OFFER_RE.search(c2))
+        has_explore = bool(EXPLORE_RE.search(c2))
+        names = bool(dest and re.search(re.escape(dest), c2, re.I))
+        ends_q = c2.endswith("?")
+        collapsed = bool(REGION_COLLAPSE_RE.search(c2))
+
+        print(f"[{label}-turn2] ({time.time()-t1:.0f}s) {followup}")
+        print(f"  closing: {c2}")
         print(f"  offer={has_offer} ends_q={ends_q} names_dest={names} explore_branch={has_explore} region_collapse={collapsed}")
 
         if collapsed:
-            failures.append(f"{label}: collapsed a continent/region into ONE destination -> {c!r}")
+            failures.append(f"{label} turn2: collapsed a continent/region into ONE destination -> {c2!r}")
         if not has_offer:
-            failures.append(f"{label}: NO PLANNING OFFER in closing -> {c!r}")
+            failures.append(f"{label} turn2: NO PLANNING OFFER in closing -> {c2!r}")
         if not ends_q:
-            failures.append(f"{label}: closing does not end with '?' -> {c!r}")
+            failures.append(f"{label} turn2: closing does not end with '?' -> {c2!r}")
         if shape == "A" and dest and not names:
-            failures.append(f"{label}: shape A must name '{dest}' -> {c!r}")
+            failures.append(f"{label} turn2: shape A must name '{dest}' -> {c2!r}")
         # Shape B is satisfied by "which of these", a keep-exploring branch, or
         # an explicit choice between named destinations ("...to Lisbon, Porto, or Split?").
-        multi_choice = bool(re.search(r"[A-Z][\w'\-]+(,\s*[A-Z][\w'\-]+)+,?\s+or\s+[A-Z][\w'\-]+", c))
-        if shape == "B" and not (has_explore or multi_choice or re.search(r"which", c, re.I)):
-            failures.append(f"{label}: shape B must ask which / offer to keep exploring -> {c!r}")
-        results.append((label, c))
+        multi_choice = bool(re.search(r"[A-Z][\w'\-]+(,\s*[A-Z][\w'\-]+)+,?\s+or\s+[A-Z][\w'\-]+", c2))
+        if shape == "B" and not (has_explore or multi_choice or re.search(r"which", c2, re.I)):
+            failures.append(f"{label} turn2: shape B must ask which / offer to keep exploring -> {c2!r}")
+        results.append((label, c1, c2))
 
     print("\n" + "=" * 70)
     if failures:
@@ -147,7 +179,7 @@ def run():
         for f in failures:
             print("  -", f)
     else:
-        print(f"ALL {len(results)} CASES PASS - every closing offers to start planning.")
+        print(f"ALL {len(results)} CASES PASS - turn1 invites favoriting, turn2 offers to start planning.")
     print("=" * 70)
     return 1 if failures else 0
 
