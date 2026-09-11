@@ -20,8 +20,10 @@ logging.basicConfig(
 for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access", "zep_cloud", "hpack"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-# The one logger that stays verbose.
+# The loggers that stay verbose: the credits trace and the inventory-preload
+# trace (one INPUT/OUTPUT pair per detected location).
 logging.getLogger("app.credits").setLevel(logging.INFO)
+logging.getLogger("app.preload").setLevel(logging.INFO)
 
 from dotenv import load_dotenv
 load_dotenv()  # loads .env into os.environ so redis_history.py can read REDIS_ENABLED, REDIS_URL etc.

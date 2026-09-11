@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     # so 1 unit per billable action is an assumption pending the refund contract.
     credits_refund_cost: int = Field(default=1, alias="CREDITS_REFUND_COST")
 
+    # ── Inventory preload (service-to-service, fire-and-forget) ─────
+    # POST /trip-planner/preloadInventory for every location the agent detects
+    # so the backend can warm its inventory before the user reaches it.
+    # Separate secret from credits: the two endpoints are issued different keys.
+    preload_inventory_enabled: bool = Field(default=True, alias="PRELOAD_INVENTORY_ENABLED")
+    preload_inventory_base_url: str = Field(default="https://staging.hiptraveler.com", alias="PRELOAD_INVENTORY_BASE_URL")
+    preload_inventory_callback_secret: str | None = Field(default=None, alias="PRELOAD_INVENTORY_CALLBACK_SECRET")
+    # Never on the user's critical path — this runs as a background task — but
+    # a bound still matters so a stalled backend can't pile up open sockets.
+    preload_inventory_timeout_seconds: float = Field(default=5.0, alias="PRELOAD_INVENTORY_TIMEOUT_SECONDS")
+
     # ── Agent deadlines ───────────────────────────────────────────
     # Without these a hung agent never resolves: the user waits forever and the
     # credit is never handed back. A timeout is a refundable hard-fail.

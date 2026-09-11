@@ -30,6 +30,7 @@ from .region_metadata import REGION_METADATA
 from . import redis_history as _redis_history
 from .rag_cache import build_rag_cache_key, get_rag_cache, set_rag_cache
 from . import credits as _credits
+from . import preload_inventory as _preload
 from .config import settings as _settings
 import os
 import logging
@@ -613,6 +614,11 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
+            # Location detected → warm the backend's inventory. Fire-and-forget,
+            # scheduled before the payload is even sent to the client.
+            _preload.preload_locations_background(
+                response_content.destinations, thread_id=thread_id, source="plan"
+            )
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
             yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ──
@@ -648,6 +654,12 @@ async def _main_stream(
         # location/filters are no longer sent by the frontend — the nano call
         # infers both from the message itself, with no fallback to fall back to.
         p = await build_rag_payload(final_message)
+        # The nano payload is the earliest point a destination is known on the
+        # explore path — fire the inventory preload here, before RAG even runs.
+        if p.get("location"):
+            _preload.preload_locations_background(
+                [p["location"]], thread_id=thread_id, source="explore"
+            )
         # ── Redis cache check — skip RAG endpoint calls on hit ──
         _cache_key = build_rag_cache_key(
             p["query"], p["location"], p["category"], p["top_k"], request.reference
@@ -862,6 +874,10 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
+            # Location detected → warm the backend's inventory. Fire-and-forget.
+            _preload.preload_locations_background(
+                response_content.destinations, thread_id=thread_id, source="plan"
+            )
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
             yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
             # ── Clear or save to Redis ────────────────────────────
