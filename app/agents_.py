@@ -157,29 +157,25 @@ trip_planning_agent = Agent(
     - If no destination can be identified from any source, leave it null and include `destinations` in the feedback as instructed below.
 
     =====================================================================
-    🌍 DESTINATION CONSOLIDATION RULE — MULTIPLE DESTINATIONS
+    🌍 MULTI-DESTINATION RULE — KEEP EVERY NAMED PLACE, NEVER MERGE
     =====================================================================
 
-    When the user mentions **more than one** destination, consolidate to the nearest common parent scope:
+    When the user names **more than one** destination, `destinations` MUST contain EVERY one of them as its own entry, each at the exact level the user said it. NEVER collapse them into a shared parent state / region / country, and NEVER drop any of them.
 
-    1. **Multiple CITIES in the same STATE/REGION** → replace with the state/region name.
-       - "San Francisco, Los Angeles, San Diego" → `destinations: ["California"]`
-       - "Houston, Austin, Dallas" → `destinations: ["Texas"]`
-       - "Barcelona, Madrid, Seville" → `destinations: ["Spain"]`
+    - "Barcelona and Madrid" → `destinations: ["Barcelona", "Madrid"]` — NOT `["Spain"]`
+    - "San Francisco, Los Angeles, San Diego" → `destinations: ["San Francisco", "Los Angeles", "San Diego"]` — NOT `["California"]`
+    - "Houston, Austin, Dallas" → `destinations: ["Houston", "Austin", "Dallas"]` — NOT `["Texas"]`
+    - "Paris, London, Rome" → `destinations: ["Paris", "London", "Rome"]` — NOT `["France", "United Kingdom", "Italy"]`
+    - "California and Texas" → `destinations: ["California", "Texas"]` — NOT `["United States"]`
+    - "France and Italy" → `destinations: ["France", "Italy"]`
+    - Single destination at any level → keep exactly as stated.
 
-    2. **Multiple STATES in the same COUNTRY** → replace with the country name.
-       - "California, Texas, New York" → `destinations: ["United States"]`
-       - "Andalusia, Catalonia, Madrid" → `destinations: ["Spain"]`
+    Why this matters: the backend plots each `destinations` entry. Merging "Barcelona, Madrid" into "Spain" makes it fetch generic "popular" Spanish cities and plot them next to the two the user actually asked for.
 
-    3. **Multiple CITIES across different countries** → use the country name for each.
-       - "Paris, London, Rome" → `destinations: ["France", "United Kingdom", "Italy"]`
+    1. Keep the user's order of mention. Remove exact duplicates only.
+    2. This applies equally to destinations taken from the assistant's planning offer under the AFFIRMATIVE RESPONSE RULE: "Want me to plan a trip to Barcelona and Madrid?" → "yes" → `destinations: ["Barcelona", "Madrid"]`.
+    3. ONLY list destinations the user (or the offer they accepted) actually named. NEVER invent parent regions, NEVER add cities the user did not name.
 
-    4. **Multiple COUNTRIES** → keep each country as a separate entry (no further consolidation).
-       - "France and Italy" → `destinations: ["France", "Italy"]`
-
-    5. **Single destination at any level** → keep exactly as stated. No consolidation needed.
-
-    ⚠️ ONLY consolidate destinations the user actually named. NEVER invent parent regions or add city lists.
     ⚠️ NEVER add `cityPreference` to feedback. NEVER ask the user which cities they want.
 
     =====================================================================
@@ -283,9 +279,9 @@ trip_planning_agent = Agent(
 
     Construct the `feedback` list by checking these specific fields in the order below.
 
-    **Step 0 — Destination Consolidation** (ALWAYS run this FIRST, before any other field):
-        * Apply the DESTINATION CONSOLIDATION RULE above.
-        * If the user named multiple destinations → consolidate them to the nearest common parent scope (cities → state, states → country).
+    **Step 0 — Multi-Destination Check** (ALWAYS run this FIRST, before any other field):
+        * Apply the MULTI-DESTINATION RULE above.
+        * If the user named multiple destinations → EVERY one of them is its own entry in `destinations`. NEVER merge them into a parent state / country, NEVER drop one.
         * Do NOT add `cityPreference` to feedback. NEVER auto-expand a country or state into cities.
 
     **Step 1 — Mandatory Fields** (Add to feedback if the field is `null` or empty):
@@ -462,6 +458,8 @@ trip_planning_agent = Agent(
         - destination = "France"     → ["Eiffel Tower", "Louvre Museum", "Palace of Versailles", "Mont Saint-Michel", "Côte d'Azur"]
         - destination = "Mexico"     → ["Chichen Itza", "Teotihuacan", "Palenque", "Cenote Ik Kil", "Copper Canyon"]
     * This applies from the VERY FIRST turn. Do NOT wait for the user to ask for POIs. Do NOT ask the user for POIs.
+    * **Multiple destinations** → spread the POIs across ALL of them so every entry in `destinations` has at least 2 of its own iconic places.
+      - destinations = ["Barcelona", "Madrid"] → ["Sagrada Família", "Park Güell", "Retiro Park", "Royal Palace of Madrid", "Prado Museum"]
 
     **State C — `destinations` is empty:**
     * Only in this case `pois` may remain `[]`. Once a destination is later resolved, auto-populate on that turn.
@@ -769,6 +767,34 @@ trip_planning_agent = Agent(
       "summary": "What dates are you planning to travel?"
     }}
 
+    **Example 5: Two cities accepted from a planning offer — keep BOTH, never merge into the country**
+    *History:*
+        User: Planning a trip to Barcelona and Madrid for 6 days with family of four - 2 adults and 2 kids.
+        Assistant: [kid-friendly things to do in both cities] … Want me to plan a trip to Barcelona and Madrid?
+        User: yes
+    *Analysis:*
+      - "yes" accepts the assistant's offer → AFFIRMATIVE RESPONSE RULE → destinations come from that offer: Barcelona AND Madrid
+      - MULTI-DESTINATION RULE → two entries in the user's order → `["Barcelona", "Madrid"]` — NOT `["Spain"]`
+      - numDays = 6, pax = 2 adults + 2 children — from the first user message; state persists across turns
+      - No date refusal → startDate MUST be first in feedback
+      - POIs spread across BOTH cities
+    *Output:*
+    {{
+      "startDate": null,
+      "endDate": null,
+      "numDays": 6,
+      "destinations": ["Barcelona", "Madrid"],
+      "month": null,
+      "pax": {{"adults": 2, "children": 2, "infants": 0, "elderly": 0}},
+      "experienceTypes": ["family friendly"],
+      "travelStyle": null,
+      "activities": null,
+      "themes": null,
+      "pois": ["Sagrada Família", "Park Güell", "Retiro Park", "Royal Palace of Madrid", "Prado Museum"],
+      "feedback": ["startDate", "travelStyle", "activities"],
+      "summary": "What dates are you planning to travel?"
+    }}
+
     =====================================================================
     🎯 TRIP DRIVERS — INTENT PRIORITY EXTRACTION
     =====================================================================
@@ -967,13 +993,15 @@ Only reached if the query IS travel-related.
   (c) LATEST / REALTIME info — the user explicitly wants the current state right now (breaking news, current safety "should I go now", live conditions today, current prices, current opening hours) → isTravelRelated = false (and isRealtime = true). See STEP 4; default is false.
 
 **isTravelRelated = true ONLY IF BOTH of these hold — this is a hard precondition:**
-1. **ONE single, specific destination is committed** — a single city or place the user has locked onto (e.g. "Tokyo", "Uluwatu"). A theme ("a surf trip"), a country with no city, or a LIST still being chosen from (e.g. 5 surf spots on the table) is NOT a committed destination.
+1. **ONE single, specific destination is committed** — a single city or place the user has locked onto (e.g. "Tokyo", "Uluwatu"). A fixed pair/set of cities the USER named themselves (e.g. "Barcelona and Madrid") counts as one committed destination. A theme ("a surf trip"), a country with no city, or a LIST of assistant-suggested options still being chosen from (e.g. 5 surf spots on the table) is NOT a committed destination.
+   ⚠️ WHO named the places is the test. Places the USER wrote in their own message are committed, however many. Places the ASSISTANT introduced as suggestions are options. An assistant answer that describes sights and neighbourhoods in each user-named city does NOT turn those cities into a list of options — the user already chose them.
 2. **The current intent is "BUILD the plan"** — they want a structured itinerary generated NOW. An explicit build request ("build it", "make the itinerary", "plan it") or a clear "yes" to an itinerary offer for that one destination.
 
 If EITHER condition is missing → isTravelRelated = false. In particular:
 - A PREFERENCE or self-description ("I'm an advanced surfer", "we're a family of 4", "on a budget", "I like nightlife") is NEVER a build request. It refines what to recommend → isTravelRelated = false, keep exploring.
 - A GENERAL question ("which one is best?", "what's the food like?", "is it crowded?") → isTravelRelated = false.
-- Multiple destinations still on the table → NOT committed → isTravelRelated = false, even if planning was discussed.
+- A FIRST-MESSAGE statement of interest ("Planning a trip to Tokyo for 6 days with family", "Planning a trip to Barcelona and Madrid for 6 days with family of four") with NO itinerary offered yet → isTravelRelated = false. Naming the place(s) and trip details is not a build request — explore first and offer the itinerary; only a "yes" to that offer (or an explicit "build it") builds.
+- Multiple assistant-suggested destinations still on the table (the user has not picked one) → NOT committed → isTravelRelated = false, even if planning was discussed.
 
 **⚠️ CONVERSATION CONTINUITY RULE:**
 Prior planning interest does carry forward, BUT it NEVER overrides the hard precondition above. Continuity only matters once ONE destination is committed:
@@ -1003,12 +1031,15 @@ The assistant offered to build / create / put together / map out / plan a trip o
 - "Ready to map out your Bali trip?" ✅
 - "Should I start building your Lahore itinerary?" ✅
 - "So Islamabad is the plan then? Want me to put a full itinerary together for Islamabad?" ✅
+- User earlier asked about "Barcelona and Madrid" → assistant: "Want me to plan a trip to Barcelona and Madrid?" / "...or shall we start planning your trip to Barcelona and Madrid?" ✅ — the user named that exact pair themselves, so it is one committed multi-city trip, not a choice between options.
 → A "yes" to ANY of these = the user is accepting the itinerary build for that single destination → isTravelRelated = true.
+⚠️ Judge the OFFER, not the answer body. Only the assistant's closing question decides the bucket. Sights, parks, museums and neighbourhoods described in the answer are NOT "destinations on the table". If the closing offers to plan the exact place(s) the user named — even two cities covered in detail above it — it is Bucket A.
 
 **BUCKET B — Choice / filter / detail question → "yes" means CONTINUE, NOT build → isTravelRelated = false.**
 The assistant asked the user to PICK or NAME a destination from multiple options, OR asked a narrowing/filtering/preference question. A "yes" here does NOT name a destination, so you cannot build yet:
 - "Which of these destinations would you like me to build an itinerary around?" → "yes" ❌
 - "Any of those areas pulling you in more — Islamabad, Swat, or Karachi?" → "yes" ❌
+- "Would you like to plan a trip to Santa Teresa, El Tunco or Popoyo, or keep exploring?" → "yes" ❌ (those cities were the ASSISTANT's suggestions — the user has not picked one)
 - "Want me to narrow this down by budget?" → "yes" ❌
 - "Are you traveling solo or with family?" → "yes" ❌
 → Set isTravelRelated = false. In `solution`, ask the user to name the ONE destination they want (vary the phrasing).
@@ -1275,6 +1306,7 @@ The conversation may contain several earlier turns. You respond to ONLY the user
 - NEVER re-run, repeat, or resurrect an earlier topic (a past comparison, a past recommendation list, a past question) just because it appears in history. Only return to it if the user's LATEST message explicitly asks to.
 - A short reply ("yes", "sure", "ok", a single city/region name) is ALWAYS an answer to the assistant's most recent question — never a trigger to revisit an older topic.
   • If the assistant just showed a list and asked the user to pick ONE (e.g. "Which of these would you like me to build an itinerary around?") and the user says "yes" without naming one → ask them to name the ONE option from THAT SAME list. Do NOT compare, do NOT pull in destinations from earlier turns.
+  • A fixed set of cities the USER named themselves as one trip ("Barcelona and Madrid") is NOT a list to pick from. A "yes" to "shall we start planning your trip to Barcelona and Madrid?" accepts planning for BOTH — never ask them to choose one of their own cities.
   • Example of the bug to avoid: earlier the user compared "London and California"; later, after California city recommendations, they say "yes" → you must ask which California city — you must NOT re-run a London-vs-California comparison.
 - Decide what the user wants RIGHT NOW from the latest message + the last assistant turn. That intent governs the entire response.
 </current_turn_anchor>
@@ -1465,6 +1497,7 @@ ONE sentence that does BOTH: invites more preferences AND offers to start planni
 
   Rules:
   - MUST name the actual destination in the planning offer — never leave it blank, never just "there" on its own.
+  - If the USER themselves named a fixed set of cities as one trip ("Barcelona and Madrid"), that set IS the narrowed destination: use SHAPE A and name EVERY city in the offer ("...planning your trip to Barcelona and Madrid?"). NEVER replace them with their country or region ("...your trip to Spain?") — the backend plans the exact cities named.
   - The preference half stays OPEN — never a menu of trip styles.
   - Exactly ONE sentence. Ends with "?".
 
@@ -1590,6 +1623,7 @@ The conversation may contain several earlier turns. You respond to ONLY the user
 - NEVER re-run, repeat, or resurrect an earlier topic (a past comparison, a past recommendation list, a past question) just because it appears in history. Only return to it if the user's LATEST message explicitly asks to.
 - A short reply ("yes", "sure", "ok", a single city/region name) is ALWAYS an answer to the assistant's most recent question — never a trigger to revisit an older topic.
   • If the assistant just showed a list and asked the user to pick ONE (e.g. "Which of these would you like me to build an itinerary around?") and the user says "yes" without naming one → ask them to name the ONE option from THAT SAME list. Do NOT compare, do NOT pull in destinations from earlier turns.
+  • A fixed set of cities the USER named themselves as one trip ("Barcelona and Madrid") is NOT a list to pick from. A "yes" to "shall we start planning your trip to Barcelona and Madrid?" accepts planning for BOTH — never ask them to choose one of their own cities.
   • Example of the bug to avoid: earlier the user compared "London and California"; later, after California city recommendations, they say "yes" → you must ask which California city — you must NOT re-run a London-vs-California comparison.
 - Decide what the user wants RIGHT NOW from the latest message + the last assistant turn. That intent governs the entire response.
 </current_turn_anchor>
@@ -1668,6 +1702,7 @@ NOT NARROWED (Shape B):
 ONE sentence that both invites more preferences AND offers to start planning, naming the destination.
   Shape (never copy): "Would you like to share more about what you're after, or shall we start planning your trip to [Destination]?"
   - MUST name the actual destination. Preference half stays OPEN (no menu). One sentence, ends with "?".
+  - If the USER themselves named a fixed set of cities as one trip ("Barcelona and Madrid"), that set IS the narrowed destination: SHAPE A, naming EVERY city ("...planning your trip to Barcelona and Madrid?"). NEVER swap them for their country or region ("...your trip to Spain?").
 
 **SHAPE B — NOT NARROWED (multiple destinations on the table)**
 ONE sentence asking which destination they want to plan, leaving room to keep exploring.

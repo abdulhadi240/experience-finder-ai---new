@@ -76,6 +76,52 @@ EUROPE = {
     "address_components": [_c("Europe", "Europe", "continent", "establishment")],
 }
 
+BARCELONA = {
+    "types": ["locality", "political"],
+    "formatted_address": "Barcelona, Spain",
+    "address_components": [
+        _c("Barcelona", "Barcelona", "locality", "political"),
+        _c("Barcelona", "B", "administrative_area_level_2", "political"),
+        _c("Catalonia", "CT", "administrative_area_level_1", "political"),
+        _c("Spain", "ES", "country", "political"),
+    ],
+}
+
+MADRID = {
+    "types": ["locality", "political"],
+    "formatted_address": "Madrid, Spain",
+    "address_components": [
+        _c("Madrid", "Madrid", "locality", "political"),
+        _c("Community of Madrid", "MD", "administrative_area_level_1", "political"),
+        _c("Spain", "ES", "country", "political"),
+    ],
+}
+
+CALIFORNIA = {
+    "types": ["administrative_area_level_1", "political"],
+    "formatted_address": "California, USA",
+    "address_components": [
+        _c("California", "CA", "administrative_area_level_1", "political"),
+        _c("United States", "US", "country", "political"),
+    ],
+}
+
+FRANCE = {
+    "types": ["country", "political"],
+    "formatted_address": "France",
+    "address_components": [_c("France", "FR", "country", "political")],
+}
+
+PARIS = {
+    "types": ["locality", "political"],
+    "formatted_address": "Paris, France",
+    "address_components": [
+        _c("Paris", "Paris", "locality", "political"),
+        _c("Île-de-France", "IDF", "administrative_area_level_1", "political"),
+        _c("France", "FR", "country", "political"),
+    ],
+}
+
 GEOCODE_BY_NAME = {
     "san francisco": SAN_FRANCISCO,
     "karachi": KARACHI,
@@ -83,7 +129,44 @@ GEOCODE_BY_NAME = {
     "singapore": SINGAPORE,
     "japan": JAPAN,
     "europe": EUROPE,
+    "barcelona": BARCELONA,
+    "madrid": MADRID,
+    "california": CALIFORNIA,
+    "ca": CALIFORNIA,
+    "france": FRANCE,
+    "paris": PARIS,
 }
+
+
+class SplitTests(unittest.TestCase):
+    """A multi-city explore `location` string is split into its cities."""
+
+    def test_separators(self):
+        self.assertEqual(pi.split_location_names("Barcelona, Madrid"), ["Barcelona", "Madrid"])
+        self.assertEqual(pi.split_location_names("Barcelona and Madrid"), ["Barcelona", "Madrid"])
+        self.assertEqual(pi.split_location_names("Paris / London & Rome"), ["Paris", "London", "Rome"])
+        self.assertEqual(pi.split_location_names("Tokyo"), ["Tokyo"])
+        self.assertEqual(pi.split_location_names(""), [])
+
+    def test_and_is_a_separator(self):
+        # "and" splits, so a country whose name contains it splits too. Both
+        # halves geocode to that same country and are skipped as country-level,
+        # so nothing wrong is preloaded.
+        self.assertEqual(pi.split_location_names("Trinidad and Tobago"), ["Trinidad", "Tobago"])
+        self.assertEqual(pi.split_location_names("Sandton"), ["Sandton"])  # "and" inside a word is not a separator
+
+    def test_duplicates_dropped_order_kept(self):
+        self.assertEqual(pi.split_location_names("Madrid, Barcelona, madrid"), ["Madrid", "Barcelona"])
+
+    def test_state_next_to_its_city_is_dropped(self):
+        sf = pi.build_location(SAN_FRANCISCO)
+        ca = pi.build_location(CALIFORNIA)
+        self.assertEqual(pi.drop_parents([sf, ca]), [sf])
+
+    def test_two_real_cities_both_kept(self):
+        bcn = pi.build_location(BARCELONA)
+        mad = pi.build_location(MADRID)
+        self.assertEqual(pi.drop_parents([bcn, mad]), [bcn, mad])
 
 
 class BuildLocationTests(unittest.TestCase):
@@ -187,6 +270,24 @@ class PreloadFlowTests(unittest.IsolatedAsyncioTestCase):
         sent = await pi.preload_locations(["Japan", "Europe"], thread_id="t1")
         self.assertEqual(sent, 0)
         self.assertEqual(self.posts, [])
+
+    async def test_multi_city_explore_location_preloads_every_city(self):
+        # The explore path hands over ONE string for "a trip to Barcelona and Madrid".
+        sent = await pi.preload_locations(["Barcelona, Madrid"], thread_id="t1")
+        self.assertEqual(sent, 2)
+        bodies = sorted(json.loads(r.content)["formattedAddr"] for r in self.posts)
+        self.assertEqual(bodies, ["Barcelona, Spain", "Madrid, Spain"])
+
+    async def test_city_with_its_state_or_country_preloads_only_the_city(self):
+        sent = await pi.preload_locations(["San Francisco, CA", "Paris, France"], thread_id="t1")
+        self.assertEqual(sent, 2)
+        bodies = sorted(json.loads(r.content)["formattedAddr"] for r in self.posts)
+        self.assertEqual(bodies, ["Paris, France", "San Francisco, CA, United States"])
+
+    async def test_planner_list_of_cities_preloads_each(self):
+        # The planner now keeps every named city instead of merging to "Spain".
+        sent = await pi.preload_locations(["Barcelona", "Madrid"], thread_id="t1")
+        self.assertEqual(sent, 2)
 
     async def test_same_thread_same_city_sends_once_but_new_thread_sends_again(self):
         await pi.preload_locations(["Karachi"], thread_id="t1")

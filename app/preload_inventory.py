@@ -30,6 +30,7 @@ Internal-only endpoint — never surface the shared secret in a response or log.
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -49,8 +50,10 @@ _PRELOAD_PATH = "/trip-planner/preloadInventory"
 _client = httpx.AsyncClient(timeout=settings.preload_inventory_timeout_seconds)
 
 # Geocode results at these levels are not a city the backend can preload.
-# The planner deliberately consolidates "Paris, London, Rome" to countries and
-# "Europe" to a continent — those must not trigger a preload of a whole nation.
+# The planner keeps every city the user named ("Paris, London, Rome" stays as
+# three cities, each preloaded on its own), but a user who says "Japan" or
+# "Europe" yields a country / continent — those must not trigger a preload of
+# a whole nation.
 _SKIP_TYPES = frozenset({"country", "continent"})
 
 # Address-component types that can name the location, most specific first.
@@ -75,10 +78,30 @@ DEFAULT_LANG = "en"
 
 @dataclass(frozen=True)
 class PreloadLocation:
-    """The three fields of the preload contract that we can actually supply."""
+    """The three fields of the preload contract that we can actually supply.
+
+    `name`, `state_name`, `state_code` and `country_name` are not sent; they
+    let a split list like "San Francisco, CA" recognise that "CA" is the
+    state of the city next to it rather than a second destination.
+    """
     formatted_addr: str
     city_type: str
     country_code: str
+    name: str = ""
+    state_name: str = ""
+    state_code: str = ""
+    country_name: str = ""
+
+    def is_parent_of(self, other: "PreloadLocation") -> bool:
+        """True when this location is the state / country that `other` sits in."""
+        me = self.name.strip().lower()
+        if not me or self.formatted_addr == other.formatted_addr:
+            return False
+        return me in {
+            other.state_name.strip().lower(),
+            other.state_code.strip().lower(),
+            other.country_name.strip().lower(),
+        } - {""}
 
     def payload(self, lang: str = DEFAULT_LANG) -> dict:
         return {
@@ -128,11 +151,14 @@ def build_location(result: dict) -> Optional[PreloadLocation]:
     if not name:
         return None
 
+    state_component = by_type.get("administrative_area_level_1") or {}
+    state_code = (state_component.get("short_name") or "").strip()
+    state_name = (state_component.get("long_name") or "").strip()
+
     parts = [name]
     if country_code == "US":
-        state = ((by_type.get("administrative_area_level_1") or {}).get("short_name") or "").strip()
-        if state and state != name:
-            parts.append(state)
+        if state_code and state_code != name:
+            parts.append(state_code)
     if country_name and country_name != name:
         parts.append(country_name)
 
@@ -140,7 +166,50 @@ def build_location(result: dict) -> Optional[PreloadLocation]:
         formatted_addr=", ".join(parts),
         city_type=city_type,
         country_code=country_code,
+        name=name,
+        state_name=state_name,
+        state_code=state_code,
+        country_name=country_name,
     )
+
+
+# ─── Splitting a multi-city string ───────────────────────────────────
+
+# The explore path's nano payload carries ONE `location` string, and for a
+# multi-city question that string is "Barcelona, Madrid". Geocoding it whole
+# resolves to only one of them (Madrid), so it is split into its parts first.
+_SPLIT_RE = re.compile(r"\s*(?:,|;|/|&|\+|\band\b)\s*", re.IGNORECASE)
+
+
+def split_location_names(text: str) -> list[str]:
+    """'Barcelona, Madrid' → ['Barcelona', 'Madrid']; 'Paris' → ['Paris'].
+
+    Order is kept and exact duplicates dropped. Whether a part is a real
+    second city or the state / country of its neighbour ("San Francisco, CA",
+    "Paris, France") is decided after geocoding by `drop_parents`.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in _SPLIT_RE.split(text or ""):
+        part = part.strip(" .")
+        key = part.lower()
+        if not part or key in seen:
+            continue
+        seen.add(key)
+        out.append(part)
+    return out
+
+
+def drop_parents(locations: list[PreloadLocation]) -> list[PreloadLocation]:
+    """Remove any location that is just the state / country of another in the list.
+
+    "San Francisco, CA" splits into two names that both geocode — but "CA"
+    is California, the state San Francisco sits in, not a second destination.
+    """
+    return [
+        loc for loc in locations
+        if not any(loc.is_parent_of(other) for other in locations if other is not loc)
+    ]
 
 
 # ─── Geocoding with a small in-process cache ─────────────────────────
@@ -274,37 +343,56 @@ async def preload_locations(
     thread_id: str = "",
     lang: str = DEFAULT_LANG,
 ) -> int:
-    """Resolve and preload every distinct name. Returns how many were sent. Never raises."""
+    """Resolve and preload every distinct name. Returns how many were sent. Never raises.
+
+    Each name may itself be a multi-city string ("Barcelona, Madrid" from the
+    explore path) — it is split, every part geocoded, and any part that turns
+    out to be the state / country of a sibling ("San Francisco, CA") dropped.
+    """
     if not settings.preload_inventory_enabled:
         return 0
 
+    # name → its parts; parts are geocoded individually.
+    groups: list[list[str]] = []
     seen: set[str] = set()
-    distinct: list[str] = []
     for raw in names or []:
         if not isinstance(raw, str):
             continue
-        name = raw.strip()
-        key = name.lower()
-        if not key or key in seen:
+        parts = [p for p in split_location_names(raw) if p.lower() not in seen]
+        if not parts:
             continue
-        seen.add(key)
-        distinct.append(name)
-    if not distinct:
+        seen.update(p.lower() for p in parts)
+        groups.append(parts)
+    if not groups:
         return 0
 
-    async def _one(name: str) -> bool:
-        location = await resolve_location(name)
-        if location is None:
-            return False
+    async def _resolve_group(parts: list[str]) -> list[PreloadLocation]:
+        resolved = await asyncio.gather(*(resolve_location(p) for p in parts), return_exceptions=True)
+        found: list[PreloadLocation] = []
+        for part, r in zip(parts, resolved):
+            if isinstance(r, BaseException):
+                _log.warning("[PRELOAD] unexpected error for %r: %s", part, r)
+            elif r is not None:
+                found.append(r)
+        # Only a split string can carry a city next to its own state / country.
+        return drop_parents(found) if len(parts) > 1 else found
+
+    group_results = await asyncio.gather(*(_resolve_group(g) for g in groups))
+    targets: dict[str, PreloadLocation] = {}
+    for locations in group_results:
+        for loc in locations:
+            targets.setdefault(loc.formatted_addr, loc)
+
+    async def _send(location: PreloadLocation) -> bool:
         if not _should_send(thread_id, location.formatted_addr):
             return False
         return await post_preload(location, lang)
 
-    results = await asyncio.gather(*(_one(n) for n in distinct), return_exceptions=True)
+    results = await asyncio.gather(*(_send(loc) for loc in targets.values()), return_exceptions=True)
     sent = 0
-    for name, r in zip(distinct, results):
+    for addr, r in zip(targets, results):
         if isinstance(r, BaseException):
-            _log.warning("[PRELOAD] unexpected error for %r: %s", name, r)
+            _log.warning("[PRELOAD] unexpected error for %r: %s", addr, r)
         elif r:
             sent += 1
     return sent

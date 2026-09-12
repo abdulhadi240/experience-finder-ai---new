@@ -43,8 +43,11 @@ class Settings(BaseSettings):
     # POST /trip-planner/preloadInventory for every location the agent detects
     # so the backend can warm its inventory before the user reaches it.
     # Separate secret from credits: the two endpoints are issued different keys.
+    # The endpoint is live in production, so the default targets the production
+    # API host (same host the credits gate uses). Point PRELOAD_INVENTORY_BASE_URL
+    # at https://staging.hiptraveler.com to test against staging.
     preload_inventory_enabled: bool = Field(default=True, alias="PRELOAD_INVENTORY_ENABLED")
-    preload_inventory_base_url: str = Field(default="https://staging.hiptraveler.com", alias="PRELOAD_INVENTORY_BASE_URL")
+    preload_inventory_base_url: str = Field(default="https://api.hiptraveler.com", alias="PRELOAD_INVENTORY_BASE_URL")
     preload_inventory_callback_secret: str | None = Field(default=None, alias="PRELOAD_INVENTORY_CALLBACK_SECRET")
     # Never on the user's critical path — this runs as a background task — but
     # a bound still matters so a stalled backend can't pile up open sockets.

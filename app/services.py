@@ -120,7 +120,10 @@ async def build_rag_payload(
                         "explicitly states a count (e.g. 'show me 20 spots' → 20, 'just give me 3' → 3). "
                         f"Never exceed {_RAG_TOPK_MAX}.\n"
                         "- location: the destination the search should be scoped to, taken from the message "
-                        "(e.g. 'best things to do in Paris' → 'Paris'). Empty string if no destination is mentioned.\n"
+                        "(e.g. 'best things to do in Paris' → 'Paris'). If the message names several destinations, "
+                        "list ALL of them comma-separated, never their shared country or region "
+                        "(e.g. 'a trip to Barcelona and Madrid' → 'Barcelona, Madrid', NOT 'Spain'). "
+                        "Empty string if no destination is mentioned.\n"
                         "- filters: short audience/style keywords the user expressed (e.g. 'family', 'vegan', "
                         "'budget', 'luxury', 'romantic'), comma-separated. Empty string if none.\n"
                     ),
