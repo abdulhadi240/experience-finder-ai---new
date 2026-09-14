@@ -260,6 +260,48 @@ async def resolve_location(name: str) -> Optional[PreloadLocation]:
     return location
 
 
+# ─── Formatting the plan's `destinations` for the backend ────────────
+
+async def format_destinations(names: Iterable[str]) -> list[str]:
+    """Rewrite each planner destination into the backend's address shape.
+
+        "Barcelona"      → "Barcelona, Spain"
+        "San Francisco"  → "San Francisco, CA, United States"   (US: state code)
+        "Japan"          → "Japan"                               (country: unchanged)
+
+    Anything that cannot be resolved (no API key, geocode failure, a country
+    or continent, an unknown name) is passed through untouched, so the plan
+    never loses a destination over a lookup. Order is kept, duplicates
+    collapse once formatted (e.g. "SF" and "San Francisco"). Never raises.
+    """
+    raw: list[str] = []
+    for n in names or []:
+        if isinstance(n, str) and n.strip():
+            raw.append(n.strip())
+    if not raw:
+        return []
+
+    async def _one(name: str) -> str:
+        try:
+            location = await asyncio.wait_for(
+                resolve_location(name), timeout=settings.preload_inventory_timeout_seconds
+            )
+        except Exception as e:  # noqa: BLE001 — a lookup must never cost the plan
+            _log.warning("[PRELOAD] format lookup failed for %r: %s", name, type(e).__name__)
+            return name
+        return location.formatted_addr if location else name
+
+    formatted = await asyncio.gather(*(_one(n) for n in raw))
+    seen: set[str] = set()
+    out: list[str] = []
+    for addr in formatted:
+        key = addr.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(addr)
+    return out
+
+
 # ─── The POST ────────────────────────────────────────────────────────
 
 _missing_secret_warned = False

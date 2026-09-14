@@ -284,6 +284,24 @@ class PreloadFlowTests(unittest.IsolatedAsyncioTestCase):
         bodies = sorted(json.loads(r.content)["formattedAddr"] for r in self.posts)
         self.assertEqual(bodies, ["Paris, France", "San Francisco, CA, United States"])
 
+    async def test_format_destinations_uses_backend_address_shape(self):
+        out = await pi.format_destinations(
+            ["Barcelona", "Madrid", "San Francisco", "Tokyo", "Japan", "Atlantis", " ", "barcelona"]
+        )
+        self.assertEqual(out, [
+            "Barcelona, Spain",                    # non-US: City, Country
+            "Madrid, Spain",
+            "San Francisco, CA, United States",    # US: City, ST, United States
+            "Tokyo, Japan",
+            "Japan",                               # country level: unchanged
+            "Atlantis",                            # unknown: raw name kept
+        ])                                         # blank dropped, duplicate collapsed
+        self.assertEqual(self.posts, [])           # formatting never preloads
+
+    async def test_format_destinations_without_api_key_keeps_names(self):
+        settings.google_maps_api_key = None
+        self.assertEqual(await pi.format_destinations(["Barcelona"]), ["Barcelona"])
+
     async def test_planner_list_of_cities_preloads_each(self):
         # The planner now keeps every named city instead of merging to "Spain".
         sent = await pi.preload_locations(["Barcelona", "Madrid"], thread_id="t1")
