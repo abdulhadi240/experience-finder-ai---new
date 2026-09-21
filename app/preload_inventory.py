@@ -413,7 +413,7 @@ async def preload_locations(
         return 0
 
     async def _resolve_whole(address: str) -> Optional[PreloadLocation]:
-        # A stale state in "City, State, Country" (Hoi An, Quang Nam, Vietnam:
+        # A stale or wrong state in a three-part address (e.g. "Hoi An, Quang Nam, Vietnam":
         # Quang Nam merged into Da Nang in 2025) makes Google fall back to the
         # bare country. Retry as "City, Country" before giving up.
         location = await resolve_location(address)

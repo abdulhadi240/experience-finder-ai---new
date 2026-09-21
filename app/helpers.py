@@ -614,7 +614,7 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            # The planner itself writes destinations as "City, State, Country"
+            # The planner itself writes destinations in address form ("City, ST, United States" / "City, Country")
             # (see the DESTINATION FORMAT RULE), so they go to the client as is.
             # Location detected → warm the backend's inventory. Fire-and-forget,
             # scheduled before the payload is even sent to the client.
@@ -876,7 +876,7 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            # Destinations are already "City, State, Country" (see the plan fast-path above).
+            # Destinations are already in address form (see the plan fast-path above).
             # Location detected → warm the backend's inventory. Fire-and-forget.
             _preload.preload_locations_background(
                 response_content.destinations, thread_id=thread_id, source="plan", split=False
