@@ -49,7 +49,7 @@ trip_planning_agent = Agent(
 
     Your mental summary MUST be:
     "I want to plan a trip to Paris for 7 days, Selected Start Date - no dates, Selected Travel Style - Slow-Travel, All-Inclusive, Selected Activities - Art Museum, Family Friendly"
-    → destinations: ["Paris"], numDays: 7, startDate: null (PERMANENTLY EXCLUDED — user said "no dates"), travelStyle: ["Slow-Travel", "All-Inclusive"], activities: ["Art Museum", "Family Friendly"]
+    → destinations: ["Paris, IDF, France"], numDays: 7, startDate: null (PERMANENTLY EXCLUDED — user said "no dates"), travelStyle: ["Slow-Travel", "All-Inclusive"], activities: ["Art Museum", "Family Friendly"]
 
     **Step 2 — Merge the current (new) message into the summary.**
     Whatever field the current message answers, add it to the summary. The current message is just the latest turn — it does NOT replace or reset prior answers.
@@ -137,17 +137,17 @@ trip_planning_agent = Agent(
 
     **⚠️ AFFIRMATIVE RESPONSE RULE — CRITICAL:**
     If the user's current message is a short affirmative OR a direct planning trigger word — including: "yes", "sure", "go ahead", "please", "let's do it", "that one", "sounds good", "itinerary", "plan it", "build it", "let's go", "do it", "make it", "proceed", "ok", "okay", or any similar phrase — AND the most recent assistant message offered destinations, asked about planning, or asked "Want me to build a trip itinerary around [city]?", you MUST extract the destination(s) from that assistant message and use them.
-    - Example: Assistant said "Want me to build a trip itinerary around Del Mar or San Francisco?" → User says "yes" → destinations: ["Del Mar", "San Francisco"]
-    - Example: Assistant said "Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo"]
-    - Example: Assistant said "Exploring Tokyo offers a vibrant mix... Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo"]
+    - Example: Assistant said "Want me to build a trip itinerary around Del Mar or San Francisco?" → User says "yes" → destinations: ["Del Mar, CA, United States", "San Francisco, CA, United States"]
+    - Example: Assistant said "Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo, Tokyo, Japan"]
+    - Example: Assistant said "Exploring Tokyo offers a vibrant mix... Want me to build a trip itinerary around these in Tokyo?" → User says "itinerary" → destinations: ["Tokyo, Tokyo, Japan"]
     - If the assistant listed multiple destinations and the user said "yes" without specifying one, include ALL mentioned destinations from the assistant's last message.
     - NEVER ask "Where would you like to go?" when the user just said yes/itinerary to a destination offer — the destination is already established in the conversation.
 
     **GRANULARITY RULE — HONOR THE USER'S EXACT SCOPE:**
     Match `destinations` to EXACTLY the geographic level the user specified. Do NOT expand or narrow it.
 
-    - **User said a CITY** → `destinations: ["CityName"]` — one entry, exact city, no changes.
-    - **User said a STATE or REGION** → `destinations: ["StateName"]` — keep as the state/region name.
+    - **User said a CITY** → `destinations: ["City, ST, Country"]` — one entry, exact city (format per the DESTINATION FORMAT RULE below).
+    - **User said a STATE or REGION** → `destinations: ["State, Country"]` — keep as the state/region, with its country.
     - **User said a COUNTRY** → `destinations: ["CountryName"]` — keep as the country name.
     - **User said a CONTINENT** → `destinations: ["ContinentName"]` — keep as the continent name.
 
@@ -162,19 +162,44 @@ trip_planning_agent = Agent(
 
     When the user names **more than one** destination, `destinations` MUST contain EVERY one of them as its own entry, each at the exact level the user said it. NEVER collapse them into a shared parent state / region / country, and NEVER drop any of them.
 
-    - "Barcelona and Madrid" → `destinations: ["Barcelona", "Madrid"]` — NOT `["Spain"]`
-    - "San Francisco, Los Angeles, San Diego" → `destinations: ["San Francisco", "Los Angeles", "San Diego"]` — NOT `["California"]`
-    - "Houston, Austin, Dallas" → `destinations: ["Houston", "Austin", "Dallas"]` — NOT `["Texas"]`
-    - "Paris, London, Rome" → `destinations: ["Paris", "London", "Rome"]` — NOT `["France", "United Kingdom", "Italy"]`
-    - "California and Texas" → `destinations: ["California", "Texas"]` — NOT `["United States"]`
+    - "Barcelona and Madrid" → `destinations: ["Barcelona, CT, Spain", "Madrid, MD, Spain"]` — NOT `["Spain"]`
+    - "San Francisco, Los Angeles, San Diego" → `destinations: ["San Francisco, CA, United States", "Los Angeles, CA, United States", "San Diego, CA, United States"]` — NOT `["California, United States"]`
+    - "Houston, Austin, Dallas" → `destinations: ["Houston, TX, United States", "Austin, TX, United States", "Dallas, TX, United States"]` — NOT `["Texas, United States"]`
+    - "Paris, London, Rome" → `destinations: ["Paris, IDF, France", "London, England, United Kingdom", "Rome, Lazio, Italy"]` — NOT `["France", "United Kingdom", "Italy"]`
+    - "California and Texas" → `destinations: ["California, United States", "Texas, United States"]` — NOT `["United States"]`
     - "France and Italy" → `destinations: ["France", "Italy"]`
     - Single destination at any level → keep exactly as stated.
 
     Why this matters: the backend plots each `destinations` entry. Merging "Barcelona, Madrid" into "Spain" makes it fetch generic "popular" Spanish cities and plot them next to the two the user actually asked for.
 
     1. Keep the user's order of mention. Remove exact duplicates only.
-    2. This applies equally to destinations taken from the assistant's planning offer under the AFFIRMATIVE RESPONSE RULE: "Want me to plan a trip to Barcelona and Madrid?" → "yes" → `destinations: ["Barcelona", "Madrid"]`.
+    2. This applies equally to destinations taken from the assistant's planning offer under the AFFIRMATIVE RESPONSE RULE: "Want me to plan a trip to Barcelona and Madrid?" → "yes" → `destinations: ["Barcelona, CT, Spain", "Madrid, MD, Spain"]`.
     3. ONLY list destinations the user (or the offer they accepted) actually named. NEVER invent parent regions, NEVER add cities the user did not name.
+    4. Write every destination in its standard English spelling, NOT as the user typed it. Fix typos, merged words and missing spaces: "danang" → "Da Nang", "hongkong" → "Hong Kong", "hochiminh" → "Ho Chi Minh City", "newyork" → "New York", "kualalumpur" → "Kuala Lumpur", "barcelonna" → "Barcelona". Correcting the spelling does NOT change the level: the user's place stays the same place.
+
+    =====================================================================
+    📍 DESTINATION FORMAT RULE — "City, State, Country"
+    =====================================================================
+
+    The backend reads every `destinations` entry as an address, so write each one in full. Do not use bare city names.
+
+    - **City** → `"City, State, Country"`
+      - State = the city's state / province / region, as its standard abbreviation when one is in common use (US states "CA", "NY", "IL"; Canadian provinces "BC", "ON"; Australian states "NSW", "VIC"; Spanish communities "CT", "MD"; French regions "IDF"). If the state has no common abbreviation, write its standard English name ("Quang Nam", "Lazio", "Bali", "Siem Reap").
+      - Country = the full English country name ("United States", "United Kingdom", "Vietnam"). Never an abbreviation, never "USA" / "UK".
+      - Use the common English city name, NOT an official administrative form: "Siem Reap" (not "Krong Siem Reap"), "Ho Chi Minh City", "Lisbon" (not "Lisboa").
+    - **State / region** → `"State, Country"` with the state's full English name: "California, United States", "Amalfi Coast, Italy", "Tuscany, Italy".
+    - **Country** → just the country: "Japan", "Vietnam".
+    - **Continent, or a region spanning several countries** → just its name: "Europe", "Southeast Asia", "Balkans".
+    - **City-state / territory** (the city IS the country) → just the name: "Singapore", "Hong Kong", "Macau", "Monaco".
+
+    Examples:
+    - "hoi an and danang" → `["Hoi An, Quang Nam, Vietnam", "Da Nang, Da Nang, Vietnam"]`
+    - "chicago" → `["Chicago, IL, United States"]`
+    - "vancouver and toronto" → `["Vancouver, BC, Canada", "Toronto, ON, Canada"]`
+    - "sydney" → `["Sydney, NSW, Australia"]`
+    - "siem reap and phnompenh" → `["Siem Reap, Siem Reap, Cambodia", "Phnom Penh, Phnom Penh, Cambodia"]`
+    - "hongkong" → `["Hong Kong"]`
+    - "japan" → `["Japan"]`
 
     ⚠️ NEVER add `cityPreference` to feedback. NEVER ask the user which cities they want.
 
@@ -187,7 +212,7 @@ trip_planning_agent = Agent(
         startDate: Optional[str] = Field(None, description="Start date in MM-dd-yyyy format.")
         endDate: Optional[str] = Field(None, description="End date in MM-dd-yyyy format.")
         numDays: Optional[int] = Field(None, description="Trip duration in days. Auto-calculated from startDate + endDate. Never added to feedback.")
-        destinations: list[str] = Field(..., description="Explicitly mentioned destinations.")
+        destinations: list[str] = Field(..., description="Explicitly mentioned destinations, correctly spelled, in 'City, State, Country' form (e.g. 'Danang' → 'Da Nang, Da Nang, Vietnam').")
         month: Optional[str] = Field(None, description="Explicitly mentioned month (e.g. 'October'). Null if not mentioned.")
         pax: Pax = Field(..., description="Traveler counts. Null if not mentioned.")
         experienceTypes: Optional[list[str]] = Field(None)
@@ -459,7 +484,7 @@ trip_planning_agent = Agent(
         - destination = "Mexico"     → ["Chichen Itza", "Teotihuacan", "Palenque", "Cenote Ik Kil", "Copper Canyon"]
     * This applies from the VERY FIRST turn. Do NOT wait for the user to ask for POIs. Do NOT ask the user for POIs.
     * **Multiple destinations** → spread the POIs across ALL of them so every entry in `destinations` has at least 2 of its own iconic places.
-      - destinations = ["Barcelona", "Madrid"] → ["Sagrada Família", "Park Güell", "Retiro Park", "Royal Palace of Madrid", "Prado Museum"]
+      - destinations = ["Barcelona, CT, Spain", "Madrid, MD, Spain"] → ["Sagrada Família", "Park Güell", "Retiro Park", "Royal Palace of Madrid", "Prado Museum"]
 
     **State C — `destinations` is empty:**
     * Only in this case `pois` may remain `[]`. Once a destination is later resolved, auto-populate on that turn.
@@ -607,7 +632,7 @@ trip_planning_agent = Agent(
       "startDate": null,
       "endDate": null,
       "numDays": 4,
-      "destinations": ["San Francisco"],
+      "destinations": ["San Francisco, CA, United States"],
       "month": null,
       "pax": {{"adults": 2, "children": 2, "infants": 0, "elderly": 0}},
       "experienceTypes": null,
@@ -631,7 +656,7 @@ trip_planning_agent = Agent(
       "startDate": null,
       "endDate": null,
       "numDays": 5,
-      "destinations": ["London"],
+      "destinations": ["London, England, United Kingdom"],
       "month": null,
       "pax": {{"adults": 2, "children": 1, "infants": 0, "elderly": 0}},
       "experienceTypes": null,
@@ -655,7 +680,7 @@ trip_planning_agent = Agent(
       "startDate": null,
       "endDate": null,
       "numDays": null,
-      "destinations": ["Tokyo"],
+      "destinations": ["Tokyo, Tokyo, Japan"],
       "month": null,
       "pax": {{"adults": 2, "children": 0, "infants": 0, "elderly": 0}},
       "experienceTypes": null,
@@ -703,7 +728,7 @@ trip_planning_agent = Agent(
       "startDate": null,
       "endDate": null,
       "numDays": null,
-      "destinations": ["Paris"],
+      "destinations": ["Paris, IDF, France"],
       "month": "October",
       "pax": null,
       "experienceTypes": null,
@@ -783,7 +808,7 @@ trip_planning_agent = Agent(
       "startDate": null,
       "endDate": null,
       "numDays": 6,
-      "destinations": ["Barcelona", "Madrid"],
+      "destinations": ["Barcelona, CT, Spain", "Madrid, MD, Spain"],
       "month": null,
       "pax": {{"adults": 2, "children": 2, "infants": 0, "elderly": 0}},
       "experienceTypes": ["family friendly"],

@@ -17,7 +17,9 @@
       "PowerShell(python -m pytest --version; python --version)",
       "PowerShell(py *)",
       "PowerShell(python -m py_compile app/helpers.py app/config.py app/preload_inventory.py main.py; if \\($?\\) { \"compile ok\" }; git status --short; git diff --stat)",
-      "PowerShell(python -m py_compile app/helpers.py app/config.py app/preload_inventory.py main.py; if \\($?\\) { \"compile ok\" }; python -m pytest test_preload_inventory.py -q 2>&1 | Select-Object -Last 25)"
+      "PowerShell(python -m py_compile app/helpers.py app/config.py app/preload_inventory.py main.py; if \\($?\\) { \"compile ok\" }; python -m pytest test_preload_inventory.py -q 2>&1 | Select-Object -Last 25)",
+      "PowerShell(git log *)",
+      "PowerShell(git checkout *)"
     ],
     "defaultMode": "bypassPermissions"
   }

@@ -614,15 +614,12 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            # The backend wants "City, Country" / "City, ST, United States" —
-            # the same address shape the preload uses — so the planner's bare
-            # names are resolved here (cached geocode; raw name kept on failure).
-            raw_destinations = list(response_content.destinations)
-            response_content.destinations = await _preload.format_destinations(raw_destinations)
+            # The planner itself writes destinations as "City, State, Country"
+            # (see the DESTINATION FORMAT RULE), so they go to the client as is.
             # Location detected → warm the backend's inventory. Fire-and-forget,
             # scheduled before the payload is even sent to the client.
             _preload.preload_locations_background(
-                raw_destinations, thread_id=thread_id, source="plan"
+                response_content.destinations, thread_id=thread_id, source="plan", split=False
             )
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
             yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"
@@ -879,12 +876,10 @@ async def _main_stream(
             )
             if ctx_pois and not response_content.pois:
                 response_content.pois = ctx_pois
-            # Backend address shape for destinations (see the plan fast-path above).
-            raw_destinations = list(response_content.destinations)
-            response_content.destinations = await _preload.format_destinations(raw_destinations)
+            # Destinations are already "City, State, Country" (see the plan fast-path above).
             # Location detected → warm the backend's inventory. Fire-and-forget.
             _preload.preload_locations_background(
-                raw_destinations, thread_id=thread_id, source="plan"
+                response_content.destinations, thread_id=thread_id, source="plan", split=False
             )
             plan_payload = json.loads(response_content.model_dump_json(exclude_none=True))
             yield f"data: {json.dumps({'travel': [plan_payload, jsonable_encoder(timing_info)], 'type': 'non-streaming', 'done': True})}\n\n"

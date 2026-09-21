@@ -384,12 +384,15 @@ async def preload_locations(
     *,
     thread_id: str = "",
     lang: str = DEFAULT_LANG,
+    split: bool = True,
 ) -> int:
     """Resolve and preload every distinct name. Returns how many were sent. Never raises.
 
     Each name may itself be a multi-city string ("Barcelona, Madrid" from the
     explore path) — it is split, every part geocoded, and any part that turns
     out to be the state / country of a sibling ("San Francisco, CA") dropped.
+    With split=False each name is one address ("Chicago, IL, United States",
+    from the planner) and is geocoded whole.
     """
     if not settings.preload_inventory_enabled:
         return 0
@@ -400,7 +403,8 @@ async def preload_locations(
     for raw in names or []:
         if not isinstance(raw, str):
             continue
-        parts = [p for p in split_location_names(raw) if p.lower() not in seen]
+        candidates = split_location_names(raw) if split else [raw.strip()]
+        parts = [p for p in candidates if p and p.lower() not in seen]
         if not parts:
             continue
         seen.update(p.lower() for p in parts)
@@ -408,8 +412,19 @@ async def preload_locations(
     if not groups:
         return 0
 
+    async def _resolve_whole(address: str) -> Optional[PreloadLocation]:
+        # A stale state in "City, State, Country" (Hoi An, Quang Nam, Vietnam:
+        # Quang Nam merged into Da Nang in 2025) makes Google fall back to the
+        # bare country. Retry as "City, Country" before giving up.
+        location = await resolve_location(address)
+        pieces = [p.strip() for p in address.split(",") if p.strip()]
+        if location is None and len(pieces) >= 3:
+            location = await resolve_location(f"{pieces[0]}, {pieces[-1]}")
+        return location
+
     async def _resolve_group(parts: list[str]) -> list[PreloadLocation]:
-        resolved = await asyncio.gather(*(resolve_location(p) for p in parts), return_exceptions=True)
+        lookup = resolve_location if split else _resolve_whole
+        resolved = await asyncio.gather(*(lookup(p) for p in parts), return_exceptions=True)
         found: list[PreloadLocation] = []
         for part, r in zip(parts, resolved):
             if isinstance(r, BaseException):
@@ -450,6 +465,7 @@ def preload_locations_background(
     thread_id: str = "",
     lang: str = DEFAULT_LANG,
     source: str = "",
+    split: bool = True,
 ) -> Optional[asyncio.Task]:
     """Schedule the preload and return immediately — the fire-and-forget entry point.
 
@@ -463,7 +479,7 @@ def preload_locations_background(
         return None
 
     _log.info("[PRELOAD] detected %s via %s | thread=%s", names, source or "?", thread_id)
-    task = asyncio.create_task(preload_locations(names, thread_id=thread_id, lang=lang))
+    task = asyncio.create_task(preload_locations(names, thread_id=thread_id, lang=lang, split=split))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task

@@ -302,6 +302,28 @@ class PreloadFlowTests(unittest.IsolatedAsyncioTestCase):
         settings.google_maps_api_key = None
         self.assertEqual(await pi.format_destinations(["Barcelona"]), ["Barcelona"])
 
+    async def test_planner_address_is_geocoded_whole_when_not_split(self):
+        # The planner emits "City, ST, Country"; that is one place, not three.
+        GEOCODE_BY_NAME["barcelona, ct, spain"] = BARCELONA
+        try:
+            sent = await pi.preload_locations(["Barcelona, CT, Spain"], thread_id="t1", split=False)
+        finally:
+            del GEOCODE_BY_NAME["barcelona, ct, spain"]
+        self.assertEqual(self.geocodes, 1)  # one lookup for the whole address, not per comma part
+        self.assertEqual(sent, 1)
+        self.assertEqual(json.loads(self.posts[0].content)["formattedAddr"], "Barcelona, Spain")
+
+    async def test_stale_state_falls_back_to_city_country(self):
+        # Google answers a stale state with just the country; retry "City, Country".
+        GEOCODE_BY_NAME["hoi an, quang nam, france"] = FRANCE
+        GEOCODE_BY_NAME["hoi an, france"] = PARIS
+        try:
+            sent = await pi.preload_locations(["Hoi An, Quang Nam, France"], thread_id="t1", split=False)
+        finally:
+            del GEOCODE_BY_NAME["hoi an, quang nam, france"], GEOCODE_BY_NAME["hoi an, france"]
+        self.assertEqual(sent, 1)
+        self.assertEqual(self.geocodes, 2)
+
     async def test_planner_list_of_cities_preloads_each(self):
         # The planner now keeps every named city instead of merging to "Spain".
         sent = await pi.preload_locations(["Barcelona", "Madrid"], thread_id="t1")
