@@ -155,11 +155,17 @@ def build_location(result: dict) -> Optional[PreloadLocation]:
     state_code = (state_component.get("short_name") or "").strip()
     state_name = (state_component.get("long_name") or "").strip()
 
+    # A result that IS the state (e.g. "California") must not repeat its own
+    # abbreviation: "California, United States", not "California, CA, United States".
+    is_state = city_type == "administrative_area_level_1" or (
+        bool(state_name) and state_name.lower() == name.lower()
+    )
+
     parts = [name]
-    if country_code == "US":
-        if state_code and state_code != name:
+    if country_code == "US" and not is_state:
+        if state_code and state_code.lower() != name.lower():
             parts.append(state_code)
-    if country_name and country_name != name:
+    if country_name and country_name.lower() != name.lower():
         parts.append(country_name)
 
     return PreloadLocation(
