@@ -16,6 +16,7 @@ import httpx
 
 from app import preload_inventory as pi
 from app.config import settings
+from app.schemas import TripPlan, dedupe_destinations
 
 
 # ─── Geocode fixtures (trimmed real Google Geocoding shapes) ──────────
@@ -169,6 +170,33 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(pi.drop_parents([bcn, mad]), [bcn, mad])
 
 
+class DestinationDedupeTests(unittest.TestCase):
+    """A country/state that only qualifies a city is not a separate destination."""
+
+    def test_city_with_its_country_is_one_destination(self):
+        # User typed "Amman Jordan" → must not become two locations.
+        self.assertEqual(dedupe_destinations(["Amman, Jordan", "Jordan"]), ["Amman, Jordan"])
+
+    def test_us_city_with_its_state_code_is_one_destination(self):
+        self.assertEqual(
+            dedupe_destinations(["Austin, TX, United States", "TX"]), ["Austin, TX, United States"]
+        )
+
+    def test_separate_country_is_kept(self):
+        # Multi-stop trips keep every stop: a country with no city of its own stays.
+        self.assertEqual(dedupe_destinations(["Tokyo, Japan", "Italy"]), ["Tokyo, Japan", "Italy"])
+        self.assertEqual(
+            dedupe_destinations(["Barcelona, Spain", "Madrid, Spain"]), ["Barcelona, Spain", "Madrid, Spain"]
+        )
+
+    def test_blanks_and_case_duplicates_dropped(self):
+        self.assertEqual(dedupe_destinations(["Amman, Jordan", " ", "amman, jordan"]), ["Amman, Jordan"])
+
+    def test_trip_plan_applies_dedupe(self):
+        plan = TripPlan(destinations=["Amman, Jordan", "Jordan"], pois=[])
+        self.assertEqual(plan.destinations, ["Amman, Jordan"])
+
+
 class BuildLocationTests(unittest.TestCase):
     """formattedAddr / cityType / countryCode derivation from a geocode result."""
 
@@ -195,6 +223,13 @@ class BuildLocationTests(unittest.TestCase):
         self.assertEqual(loc.formatted_addr, "Singapore")
         self.assertEqual(loc.city_type, "locality")
         self.assertEqual(loc.country_code, "SG")
+
+    def test_us_state_does_not_repeat_its_code(self):
+        # "California, CA, United States" was being sent; the state is not a city.
+        loc = pi.build_location(CALIFORNIA)
+        self.assertEqual(loc.formatted_addr, "California, United States")
+        self.assertEqual(loc.city_type, "administrative_area_level_1")
+        self.assertEqual(loc.country_code, "US")
 
     def test_country_and_continent_are_skipped(self):
         self.assertIsNone(pi.build_location(JAPAN))
@@ -297,6 +332,9 @@ class PreloadFlowTests(unittest.IsolatedAsyncioTestCase):
             "Atlantis",                            # unknown: raw name kept
         ])                                         # blank dropped, duplicate collapsed
         self.assertEqual(self.posts, [])           # formatting never preloads
+
+    async def test_format_destinations_us_state_has_no_state_code(self):
+        self.assertEqual(await pi.format_destinations(["California"]), ["California, United States"])
 
     async def test_format_destinations_without_api_key_keeps_names(self):
         settings.google_maps_api_key = None
