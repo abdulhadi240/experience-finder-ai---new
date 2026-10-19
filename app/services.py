@@ -166,6 +166,19 @@ async def build_rag_payload(
 
 # ─── LLM-Generated Loading Statements ───────────────────────────
 
+_ROBOTIC_OPENER_RE = re.compile(r"^\W*(acknowledging|processing|computing|scanning|searching)\b", re.I)
+# "Checking why your subscription renewed…", "verifying if your eSIM works…"
+_ACCOUNT_CLAIM_RE = re.compile(
+    r"\b(check|verif|review|confirm|access|inspect|locat|retriev|fetch)\w*\s+(?:\w+\s+){0,2}your\b", re.I
+)
+
+_NEUTRAL_LOADERS = [
+    "Getting things ready for you…",
+    "One sec, I'm right here…",
+    "Almost ready…",
+]
+
+
 async def generate_loading_statements(message: str, param: str) -> list:
     """
     Call gpt-4.1-nano to produce 5 personalised loading statements for this specific query.
@@ -175,10 +188,58 @@ async def generate_loading_statements(message: str, param: str) -> list:
     Falls back to [] on any failure; caller uses the static instant message + a
     deep-research fallback when these run out.
     """
+    if param == "neutral":
+        # Greetings — nano invents "top picks for your destination" given any room
+        return list(_NEUTRAL_LOADERS)
     if param == "support":
         return await _generate_support_loading_statements(message)
+    if param == "plan":
+        return await _generate_travel_loading_statements(message, "trip planner")
 
-    mode = "trip planner" if param == "plan" else "explore"
+    # /chat: the router only decides support vs travel after validation, and no
+    # keyword list catches every support question ("can I pay with paypal").
+    # Classify and write both loader sets in parallel — same wall-clock as one call.
+    kind, travel, support = await asyncio.gather(
+        _classify_loader_topic(message),
+        _generate_travel_loading_statements(message, "explore"),
+        _generate_support_loading_statements(message, maybe_travel=True),
+        return_exceptions=True,
+    )
+    if isinstance(kind, Exception) or kind is None:
+        # classifier failed — fall back to the keyword hint from the caller
+        kind = "support" if param == "unsure" else "travel"
+    picked = support if kind == "support" else travel
+    return [] if isinstance(picked, Exception) else picked
+
+
+async def _classify_loader_topic(message: str) -> str | None:
+    """'support' if the newest message is about HipTraveler itself, else 'travel'."""
+    prompt = (
+        f"Conversation with HipTraveler's AI (newest message is last):\n{message}\n\n"
+        "Is the NEWEST message about HipTraveler itself — its app or website, the user's account, login, "
+        "Premium/subscription, pricing of HipTraveler, payments or bookings made through HipTraveler, refunds, "
+        "eSIMs sold by HipTraveler, loyalty points/rewards, saving/sharing/exporting trips, travelogues, "
+        "notifications, emails, bugs, or contacting support? Also any question about what a HipTraveler "
+        "feature is or does — Dream Trips, Travelogues, My Trips, AI Assist, Concierge, travel blogs. "
+        "Answer 'support'.\n"
+        "Examples: 'what is a dream trip?' → support; 'plan my dream trip to Bali' → travel; "
+        "'how does premium work' → support; 'premium hotels in Dubai' → travel; "
+        "'does the esim work in Japan' → support; 'esim or local sim in Vietnam?' → travel.\n"
+        "Is it about travel itself — places, things to do, food, hotels to pick, flights, weather, safety, "
+        "packing, money abroad, or anything else? Answer 'travel'.\n"
+        "Reply with exactly one word: support or travel."
+    )
+    response = await _openai_client.chat.completions.create(
+        model="gpt-4.1-mini",  # nano misreads "what is a dream trip?" as travel
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=3,
+        temperature=0,
+    )
+    answer = response.choices[0].message.content.strip().lower()
+    return "support" if answer.startswith("support") else "travel" if answer.startswith("travel") else None
+
+
+async def _generate_travel_loading_statements(message: str, mode: str) -> list:
 
     prompt = (
         f"Travel AI conversation context (may include prior turns; newest message is last):\n{message}\n\n"
@@ -191,13 +252,11 @@ async def generate_loading_statements(message: str, param: str) -> list:
         "- ⚠️ NEVER invent or assume a destination. Only name a place if it ACTUALLY appears in the conversation above. "
         "If the message is a greeting ('hi', 'hello', 'hey'), small talk, a vague question, or has NO destination "
         "anywhere in the context, the loaders MUST be completely generic with NO place names at all "
-        "(e.g. 'Getting things ready for you…', 'One sec while I pull this together…', 'Lining up the best options…'). "
+        "(e.g. 'Getting things ready for you…', 'One sec while I pull this together…'). "
         "Mentioning a destination that isn't in the conversation is a critical failure.\n"
+        "- For a greeting or vague message there is nothing to recommend yet, so also no 'options', 'picks', "
+        "'choices', 'recommendations', 'destination' or 'travel info' — just warm, topic-free waiting lines.\n"
         "- Only when a real destination/topic is present, reference it by name (e.g. 'Pulling up the best of Islamabad…').\n"
-        "- If the newest message is a question about HipTraveler ITSELF (account, Premium, eSIM, bookings, "
-        "payments, refunds, cancellations, loyalty points, the app, bugs, contacting support), write loaders about "
-        "THAT support topic instead (e.g. 'Looking up how refunds work for you…') — no places, no travel picks, "
-        "and never claim to check their account, booking, or membership status.\n"
         "- Sound like a knowledgeable travel friend thinking out loud, not a chatbot.\n"
         "- Each message should feel like progress: looking → finding → comparing → narrowing → almost ready.\n"
         "- NEVER use: 'acknowledging', 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
@@ -221,41 +280,65 @@ async def generate_loading_statements(message: str, param: str) -> list:
         data     = json.loads(raw)
         stmts    = data.get("messages", [])
         if isinstance(stmts, list) and len(stmts) >= 1:
-            return [str(s) for s in stmts[:5]]
+            # nano ignores the banned-opener rule now and then — drop those lines
+            return [str(s) for s in stmts[:5] if not _ROBOTIC_OPENER_RE.match(str(s))]
     except Exception:
         pass
 
     return []
 
 
-async def _generate_support_loading_statements(message: str) -> list:
-    """Loaders for /chat/support — about the user's HipTraveler question, never travel picks."""
+async def _generate_support_loading_statements(message: str, maybe_travel: bool = False) -> list:
+    """Loaders for HipTraveler support questions — about the help topic, never travel picks.
+
+    maybe_travel=True is /chat, where a support keyword ("cancellation", "booking")
+    can still belong to a travel question; the model falls back to generic loaders then.
+    """
+    travel_rule = (
+        "- If the newest message is actually a TRAVEL question (places, hotels to stay at, things to do, "
+        "e.g. 'hotels in Rome with free cancellation'), ignore the support framing and write short generic "
+        "loaders with no place names (e.g. 'Pulling the good options together…').\n"
+        if maybe_travel else ""
+    )
     prompt = (
         f"HipTraveler customer support conversation (may include prior turns; newest message is last):\n{message}\n\n"
         "Write exactly 5 short loading messages (5–9 words each) to display while the support assistant "
         "looks up the answer in HipTraveler's help center.\n"
         "Rules:\n"
         "- Name the specific topic of the NEWEST question (e.g. Premium cancellation, hotel refunds, "
-        "loyalty points, eSIM setup, login problems). If the question is vague or just a greeting, keep them "
-        "generic (e.g. 'Getting the right answer for you…').\n"
+        "loyalty points, eSIM setup, login problems — these are only examples, never mention one the user "
+        "didn't ask about). If the question is vague or just a greeting, keep them topic-free "
+        "(e.g. 'Getting the right answer for you…', 'One sec, I'm here to help…').\n"
+        f"{travel_rule}"
+        "- The assistant only reads help articles. It can NOT see the user's account, bookings, payments, "
+        "transactions, device, or eSIM/activation status — so never say it is checking, verifying, reviewing, "
+        "or confirming anything of theirs (bad: 'Checking your booking details…', 'Verifying recent transactions…', "
+        "'Confirming device compatibility…', 'Locating details on your past orders…'). Frame every loader around "
+        "the help topic or 'how to' — good: 'Looking up how double charges get refunded…', "
+        "'Finding how to view past orders…'.\n"
+        "- Stick to exactly what the user described — don't add details (they said 'crashing', not 'lost').\n"
         "- Never invent policies, timelines, or outcomes — the loaders only say what is being looked up.\n"
-        "- No destinations, places, or travel recommendations.\n"
-        "- Each message should feel like progress: looking up → checking details → confirming → almost ready.\n"
-        "- NEVER use: 'processing', 'computing', 'scanning', 'searching', or stage labels. "
-        "Never claim to access the user's account or booking.\n"
+        "- No destinations, places, travel recommendations, or 'best options/picks' language.\n"
+        "- Each message should feel like progress: finding the help topic → reading the details → "
+        "pulling the steps together → almost ready. The last one is just 'Almost ready with your answer…' "
+        "or similar — never 'finalizing' a refund, cancellation, transfer or anything else.\n"
+        "- Write naturally; never repeat a word back to back.\n"
+        "- NEVER use: 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
         "- Tone: warm, calm, helpful.\n"
         'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…"]}'
     )
     try:
         response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-4.1-mini",  # nano slips into "checking your account…" wording
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
             temperature=0.7,
         )
         stmts = json.loads(response.choices[0].message.content.strip()).get("messages", [])
         if isinstance(stmts, list) and len(stmts) >= 1:
-            return [str(s) for s in stmts[:5]]
+            # The agent can't see their account — drop the odd "Checking your…" nano still writes
+            return [str(s) for s in stmts[:5]
+                    if not _ROBOTIC_OPENER_RE.match(str(s)) and not _ACCOUNT_CLAIM_RE.search(str(s))]
     except Exception:
         pass
     return []
@@ -278,6 +361,12 @@ _INSTANT_STATEMENTS = {
         "Getting the right answer for you…",
         "Pulling up the details on this…",
     ],
+    # /chat message that isn't clearly travel — may be support, so fits both
+    'neutral': [
+        "Looking into this for you…",
+        "One sec — getting you the right answer…",
+        "Getting the details on this…",
+    ],
     'plan': [
         "Putting your trip together…",
         "Working out the details for you…",
@@ -289,7 +378,9 @@ _INSTANT_STATEMENTS = {
 
 
 def get_instant_loading_message(param: str) -> str:
-    mode = param if param in ('plan', 'support') else 'explore'
+    if param == 'unsure':
+        param = 'neutral'
+    mode = param if param in ('plan', 'support', 'neutral') else 'explore'
     return random.choice(_INSTANT_STATEMENTS[mode])
 
 

@@ -132,6 +132,52 @@ _SUPPORT_SIGNAL_RE = re.compile(
 )
 
 
+# Loader-only extras: app-feature questions that don't hit _SUPPORT_SIGNAL_RE.
+# Kept separate so they don't change follow-up routing.
+_SUPPORT_LOADER_RE = re.compile(
+    r"\b(the\s+app|app\s+store|android|iphone|ios|offline|profile|settings|notifications?|"
+    r"export\w*|google\s+maps|wordpress|reservations?|orders?|my\s+trips|saved\s+trips|"
+    r"customer\s+service|contact\s+(?:you|the\s+team)|email\s+(?:you|support))\b"
+    r"|\bhow\s+(?:do|can)\s+i\s+(?:save|share|export|change|delete|edit|update|download|install|"
+    r"sync|post|upload|remove|sign\s+up|log\s+out|turn\s+(?:on|off))\b"
+    r"|\b(won'?t|doesn'?t|can'?t|cannot)\s+(?:load|open|work|sync|save|sign|log)",
+    re.IGNORECASE,
+)
+
+
+_GREETING_RE = re.compile(
+    r"^\s*(hi|hey|hello|hiya|howdy|yo|sup|help|thanks|thank\s+you|good\s+(morning|afternoon|evening))"
+    r"(\s+there)?[\s!.?,]*$",
+    re.IGNORECASE,
+)
+
+
+# Recommendation-style travel wording — only these get the "best picks" instant
+# loader; anything else (incl. weather/safety/packing facts) gets a neutral one.
+_TRAVEL_SIGNAL_RE = re.compile(
+    r"\b(things\s+to\s+do|where\s+(?:should|to|can)\s+(?:i|we)\s+(?:go|stay|eat|visit)|visit\w*|trip\s+to|"
+    r"road\s+trip|day\s+trips?|weekend|honeymoon|restaurants?|food|eat|cafes?|coffee|bars?|nightlife|beach(?:es)?|"
+    r"hikes?|hiking|museums?|sights|attractions|neighbou?rhoods?|"
+    r"northern\s+lights|diving|best\s+\w+\s+(?:in|near|for))\b",
+    re.IGNORECASE,
+)
+
+
+def _pick_loader_mode(message: str, support_only: bool) -> str:
+    """Loader style for this message. /chat only learns it's a support question
+    after validation, so anything not clearly travel is "unsure": a neutral
+    instant loader, then generate_loading_statements classifies the topic."""
+    if _GREETING_RE.match(message):
+        return "neutral"  # nothing to name yet — topic-free loaders, no LLM call
+    if support_only:
+        return "support"
+    if _SUPPORT_SIGNAL_RE.search(message) or _SUPPORT_LOADER_RE.search(message):
+        return "unsure"
+    if _TRAVEL_SIGNAL_RE.search(message):
+        return "explore"
+    return "unsure"
+
+
 def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
     """
     Returns True when the user's message looks like a conversational answer
@@ -725,7 +771,7 @@ async def _main_stream(
 
     # Follow-up replies skip RAG and LLM loaders entirely. Support gets its own
     # FAQ-topic loaders and skips RAG — place data is never used there.
-    _loader_mode = "support" if support_only else "explore"
+    _loader_mode = _pick_loader_mode(request.message, support_only)
     if not _is_followup:
         loading_task  = asyncio.create_task(generate_loading_statements(final_message, _loader_mode))
         rag_task      = None if support_only else asyncio.create_task(_summarize_then_fetch())
@@ -785,8 +831,9 @@ async def _main_stream(
                 _llm_pos = _loader_index - 1
                 if _llm_pos < len(_llm_msgs):
                     _msg: str | None = _llm_msgs[_llm_pos]
-                elif not _deep_research_sent:
-                    _msg = "Doing some deep research on this — almost there…"
+                elif not _deep_research_sent and _loader_mode != "neutral":
+                    # Fits travel and support alike — the topic may still be unknown here
+                    _msg = "Still pulling this together — almost there…"
                     _deep_research_sent = True
                 else:
                     _msg = None  # deep-research already shown — stay silent
@@ -1182,6 +1229,7 @@ async def _main_stream(
     redis_answer_parts: list[str] = []
     stream_error = False
     answer_prefix_sent = False
+    # The /chat loaders were topic-classified, so the leftovers fit a support answer.
     _tick_loaders = is_customer_service and not _is_followup
     _silent_for = 0.0
 
