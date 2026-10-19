@@ -175,6 +175,9 @@ async def generate_loading_statements(message: str, param: str) -> list:
     Falls back to [] on any failure; caller uses the static instant message + a
     deep-research fallback when these run out.
     """
+    if param == "support":
+        return await _generate_support_loading_statements(message)
+
     mode = "trip planner" if param == "plan" else "explore"
 
     prompt = (
@@ -191,6 +194,10 @@ async def generate_loading_statements(message: str, param: str) -> list:
         "(e.g. 'Getting things ready for you…', 'One sec while I pull this together…', 'Lining up the best options…'). "
         "Mentioning a destination that isn't in the conversation is a critical failure.\n"
         "- Only when a real destination/topic is present, reference it by name (e.g. 'Pulling up the best of Islamabad…').\n"
+        "- If the newest message is a question about HipTraveler ITSELF (account, Premium, eSIM, bookings, "
+        "payments, refunds, cancellations, loyalty points, the app, bugs, contacting support), write loaders about "
+        "THAT support topic instead (e.g. 'Looking up how refunds work for you…') — no places, no travel picks, "
+        "and never claim to check their account, booking, or membership status.\n"
         "- Sound like a knowledgeable travel friend thinking out loud, not a chatbot.\n"
         "- Each message should feel like progress: looking → finding → comparing → narrowing → almost ready.\n"
         "- NEVER use: 'acknowledging', 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
@@ -221,6 +228,39 @@ async def generate_loading_statements(message: str, param: str) -> list:
     return []
 
 
+async def _generate_support_loading_statements(message: str) -> list:
+    """Loaders for /chat/support — about the user's HipTraveler question, never travel picks."""
+    prompt = (
+        f"HipTraveler customer support conversation (may include prior turns; newest message is last):\n{message}\n\n"
+        "Write exactly 5 short loading messages (5–9 words each) to display while the support assistant "
+        "looks up the answer in HipTraveler's help center.\n"
+        "Rules:\n"
+        "- Name the specific topic of the NEWEST question (e.g. Premium cancellation, hotel refunds, "
+        "loyalty points, eSIM setup, login problems). If the question is vague or just a greeting, keep them "
+        "generic (e.g. 'Getting the right answer for you…').\n"
+        "- Never invent policies, timelines, or outcomes — the loaders only say what is being looked up.\n"
+        "- No destinations, places, or travel recommendations.\n"
+        "- Each message should feel like progress: looking up → checking details → confirming → almost ready.\n"
+        "- NEVER use: 'processing', 'computing', 'scanning', 'searching', or stage labels. "
+        "Never claim to access the user's account or booking.\n"
+        "- Tone: warm, calm, helpful.\n"
+        'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…"]}'
+    )
+    try:
+        response = await _openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.7,
+        )
+        stmts = json.loads(response.choices[0].message.content.strip()).get("messages", [])
+        if isinstance(stmts, list) and len(stmts) >= 1:
+            return [str(s) for s in stmts[:5]]
+    except Exception:
+        pass
+    return []
+
+
 # ─── Instant First Loading Statement (fires at t=0) ──────────────
 
 _INSTANT_STATEMENTS = {
@@ -231,6 +271,12 @@ _INSTANT_STATEMENTS = {
         "Checking what stands out here…",
         "Rounding up the top options…",
         "Sorting through what's actually worth it…",
+    ],
+    'support': [
+        "Checking our help center…",
+        "Looking that up for you…",
+        "Getting the right answer for you…",
+        "Pulling up the details on this…",
     ],
     'plan': [
         "Putting your trip together…",
@@ -243,7 +289,7 @@ _INSTANT_STATEMENTS = {
 
 
 def get_instant_loading_message(param: str) -> str:
-    mode = 'plan' if param == 'plan' else 'explore'
+    mode = param if param in ('plan', 'support') else 'explore'
     return random.choice(_INSTANT_STATEMENTS[mode])
 
 

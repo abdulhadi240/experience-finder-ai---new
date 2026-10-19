@@ -545,11 +545,6 @@ def get_error_stream_response(reason: str, solution: str):
 # ── /chat/support block messages ──────────────────────────────────
 # The /chat block copy pivots back to travel; on the support endpoint the
 # user came for help with HipTraveler, so point them there instead.
-_SUPPORT_SCOPE_MESSAGE = (
-    "I can only help with questions about HipTraveler here. Ask me about your account, "
-    "Premium, bookings, payments, refunds, or the app — or reach our team at "
-    "support@hiptraveler.com."
-)
 _SUPPORT_PII_MESSAGE = (
     "To keep your information safe, please avoid sharing personal details like phone numbers, "
     "email addresses, card numbers, or ID numbers in this chat. Describe your issue without them, "
@@ -572,9 +567,10 @@ async def _main_stream(
 ) -> AsyncGenerator[str, None]:
     """SSE stream for one chat message.
 
-    support_only=True is the /chat/support path: same credits gate, scope gate,
-    PII check and validation agent, but every valid message is answered by
-    customer_service_agent — no trip planning, RAG, guide or travel agents.
+    support_only=True is the /chat/support path: same credits gate, PII check
+    and validation agent (the location scope gate is skipped), but every valid
+    message is answered by customer_service_agent — no trip planning, RAG,
+    guide or travel agents.
     """
     start_time = time.time()
 
@@ -688,7 +684,10 @@ async def _main_stream(
 
     # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, scope, Zep all in parallel ──
     # scope gate runs in a thread so pycountry I/O never blocks the event loop
-    scope_task    = asyncio.create_task(asyncio.to_thread(_check_location_scope, request.message, request.reference))
+    # Support skips it: the gate keeps travel answers inside the portal's country,
+    # but a support question may name any country ("does my eSIM work in Japan?").
+    scope_task    = (None if support_only else
+                     asyncio.create_task(asyncio.to_thread(_check_location_scope, request.message, request.reference)))
     pii_task      = asyncio.create_task(check_pii_fast(request.message))
 
     async def _summarize_then_fetch() -> tuple[Any, Any]:
@@ -724,11 +723,12 @@ async def _main_stream(
         await set_rag_cache(_cache_key, rag_res, guide_res)
         return rag_res, guide_res
 
-    # Follow-up replies skip RAG and LLM loaders entirely; so does support —
-    # place data is never used there and the LLM loaders are travel-themed.
-    if not _is_followup and not support_only:
-        loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
-        rag_task      = asyncio.create_task(_summarize_then_fetch())
+    # Follow-up replies skip RAG and LLM loaders entirely. Support gets its own
+    # FAQ-topic loaders and skips RAG — place data is never used there.
+    _loader_mode = "support" if support_only else "explore"
+    if not _is_followup:
+        loading_task  = asyncio.create_task(generate_loading_statements(final_message, _loader_mode))
+        rag_task      = None if support_only else asyncio.create_task(_summarize_then_fetch())
     else:
         loading_task  = None
         rag_task      = None
@@ -740,24 +740,13 @@ async def _main_stream(
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
-    if support_only:
-        _instant_loader = "Checking our help center…"
-    elif _is_followup:
-        _instant_loader = "On it…"
-    else:
-        _instant_loader = get_instant_loading_message("explore")
+    _instant_loader = get_instant_loading_message(_loader_mode) if not _is_followup else "On it…"
     _shown_loaders: list[str] = [_instant_loader]
     yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
     yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
 
     if _is_followup:
         pass  # no RAG, no validation — nothing to wait for
-    elif support_only:
-        # Validation only — no RAG, no LLM loaders to tick through.
-        try:
-            await validation_task
-        except Exception:
-            pass  # surfaced below via validation_task.result()
     else:
         # ── Pre-fetch LLM loaders while rag+validation run in background ─
         _llm_msgs: list[str] = []
@@ -774,7 +763,7 @@ async def _main_stream(
 
         # ── Await RAG + validation, emitting one LLM loader per 1.5s tick ──
         _loader_index = 1
-        _pending = {rag_task, validation_task}
+        _pending = {t for t in (rag_task, validation_task) if t is not None}
         while _pending:
             _, _pending = await asyncio.wait(_pending, timeout=1.5)
             if _pending:  # still waiting — emit next loader
@@ -808,13 +797,11 @@ async def _main_stream(
 
     # ── Scope gate (resolved by now — fired at t=0 in a thread) ─────
     try:
-        scope_error = scope_task.result() if scope_task.done() else await scope_task
+        scope_error = None if scope_task is None else await scope_task
     except Exception:
         scope_error = None
     if scope_error:
         _refund_task()  # blocked by our own scope gate — no agent output delivered
-        if support_only:
-            scope_error = _SUPPORT_SCOPE_MESSAGE
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(scope_error.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
@@ -1190,17 +1177,41 @@ async def _main_stream(
 
     # ── Phase 2: stream main agent tokens ────────────────────────────
     # Loaders were already emitted during rag+validation wait — just stream now.
+    # Exception: customer service spends several seconds in file_search before
+    # its first token, so keep ticking the remaining FAQ-topic loaders until then.
     redis_answer_parts: list[str] = []
     stream_error = False
     answer_prefix_sent = False
+    _tick_loaders = is_customer_service and not _is_followup
+    _silent_for = 0.0
 
     while True:
         try:
-            # A hung agent must not park the client forever. Timing out here is
-            # what turns a hang into a refundable hard-fail rather than silence.
-            token = await asyncio.wait_for(
-                token_queue.get(), timeout=_AGENT_TOKEN_TIMEOUT
-            )
+            if _tick_loaders and not redis_answer_parts:
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=1.5)
+                except asyncio.TimeoutError:
+                    _silent_for += 1.5
+                    if _silent_for >= _AGENT_TOKEN_TIMEOUT:
+                        raise  # same hard-fail as the plain wait below
+                    if not _llm_msgs_ready and loading_task.done():
+                        try:
+                            _llm_msgs = loading_task.result() or []
+                        except Exception:
+                            _llm_msgs = []
+                        _llm_msgs_ready = True
+                    if _loader_index - 1 < len(_llm_msgs):
+                        _msg = _llm_msgs[_loader_index - 1]
+                        _loader_index += 1
+                        _shown_loaders.append(_msg)
+                        yield f"data: {json.dumps({'loading': _msg})}\n\n"
+                    continue
+            else:
+                # A hung agent must not park the client forever. Timing out here is
+                # what turns a hang into a refundable hard-fail rather than silence.
+                token = await asyncio.wait_for(
+                    token_queue.get(), timeout=_AGENT_TOKEN_TIMEOUT
+                )
         except asyncio.TimeoutError:
             _log.error(
                 "[AGENT] no token for %.0fs — treating as hard-fail | requestId=%s",
