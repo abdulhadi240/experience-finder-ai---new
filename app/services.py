@@ -7,7 +7,7 @@ import random
 from openai import AsyncOpenAI
 from agents import Runner
 from openai.types.responses import ResponseTextDeltaEvent
-from .agents_ import trip_planning_agent, rag_format_agent, web_search_agent
+from .agents_ import trip_planning_agent, rag_format_agent, web_search_agent, customer_service_agent
 from .config import settings
 from .memory import check_user, add_message, get_message
 from .tools import research_further
@@ -428,6 +428,9 @@ async def stream_agent_to_queue(
 
         if agent_name == 'rag_format_agent':
             result = Runner.run_streamed(rag_format_agent, final_message_with_ref)
+        elif agent_name == 'customer_service_agent':
+            # Support answers name no places — nothing for the validator to research.
+            result = Runner.run_streamed(customer_service_agent, final_message_with_ref)
         else:
             result = Runner.run_streamed(web_search_agent, final_message_with_ref)
 

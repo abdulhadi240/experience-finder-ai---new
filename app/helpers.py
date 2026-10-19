@@ -120,6 +120,16 @@ _PLANNING_INTENT_RE = re.compile(
     r"|\b(trip|itinerary)\s+around\s+that\b",
     re.IGNORECASE,
 )
+# Support-sounding messages must reach the validation agent so it can set
+# isCustomerService — never swallow them as a preference reply. This only
+# forces validation; the agent still makes the routing decision.
+_SUPPORT_SIGNAL_RE = re.compile(
+    r"\b(refunds?|cancel\w*|subscription|premium|e-?sim|password|log\s?in|sign\s?in|"
+    r"account|booking|bookings|confirmation|payments?|charged|declined|deposit|"
+    r"loyalty|points|coupons?|travelogues?|dream\s+trips?|concierge|support|"
+    r"bug|crash\w*|not\s+working|hiptraveler)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
@@ -148,6 +158,10 @@ def _is_conversational_reply(message: str, history: list[dict] | None) -> bool:
     # only an acceptance when it's short; a long one ("yes, I love food markets
     # and slow mornings...") is still someone answering the preference half.
     if _PLANNING_INTENT_RE.search(msg) or (_ACCEPTANCE_STARTS.match(msg) and len(msg) <= 60):
+        return False
+
+    # Possible support question -> let the validation agent classify it
+    if _SUPPORT_SIGNAL_RE.search(msg):
         return False
 
     # Strong travel-query signals -> treat as a new query, not a reply
@@ -842,11 +856,21 @@ async def _main_stream(
         yield f"data: {json.dumps({'done': True, 'total_time': time.time() - start_time, 'blocked': True})}\n\n"
         return
 
+    # ── Customer service (isCustomerService=True) ────────────────
+    # Support/FAQ questions about HipTraveler itself. They skip trip planning
+    # and every travel-context injection below (RAG, guide, POI hints) and go
+    # straight to customer_service_agent.
+    is_customer_service = bool(
+        validation_result is not None
+        and not isinstance(validation_result, Exception)
+        and getattr(validation_result.final_output, "isCustomerService", False)
+    )
+
     # ── RAG injection for streaming agents ───────────────────────
     # Only chunks signal a real RAG hit — other fields are metadata
     rag_chunks = []
     rag_data = {}
-    if rag_result is not None and not isinstance(rag_result, Exception):
+    if not is_customer_service and rag_result is not None and not isinstance(rag_result, Exception):
         rag_chunks = rag_result.get("chunks") or []
         if rag_chunks:
             rag_data = {
@@ -865,7 +889,8 @@ async def _main_stream(
     # ── Trip planning (isTravelRelated=True) ─────────────────────
     # Route is decided purely by the validation agent's INTENT verdict —
     # no keyword/sentence backstops.
-    if not _is_followup and validation_result.final_output.isTravelRelated:
+    if (not _is_followup and not is_customer_service
+            and validation_result.final_output.isTravelRelated):
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
@@ -938,7 +963,8 @@ async def _main_stream(
     # Guide content is editorial/destination context, not place-id data.
     # The agent must render it INSIDE the answer — a short guide section at the
     # TOP and another at the BOTTOM — in the same format as the rest of the answer.
-    if not is_realtime and guide_result is not None and not isinstance(guide_result, Exception) and guide_result:
+    if (not is_realtime and not is_customer_service and guide_result is not None
+            and not isinstance(guide_result, Exception) and guide_result):
         final_message_with_ref += (
             f"\n\n[DESTINATION_GUIDE]\n"
             f"Structured destination guide data for this query. "
@@ -1006,7 +1032,7 @@ async def _main_stream(
     else:
         # If the user just completed the single follow-up cycle (T3 = accepted planning),
         # extract their preference answer and inject as a hard constraint.
-        if _fup_count_pre >= 1 and history and len(history) >= 1:
+        if not is_customer_service and _fup_count_pre >= 1 and history and len(history) >= 1:
             _q1_ans = (history[-1].get("question") or "").strip()
             if _q1_ans:
                 final_message_with_ref += (
@@ -1037,7 +1063,7 @@ async def _main_stream(
     # Lands in the opening paragraph, above the POI list, so the user knows
     # what to do with the list before reading it — and well clear of the closing
     # question, so RULE ZERO (every closing offers planning, ends with "?") holds.
-    if not history:
+    if not history and not is_customer_service:
         final_message_with_ref += (
             "\n\n[FAVOURITING_HINT — FIRST RESPONSE ONLY]\n"
             "If your response includes a <POIS> block, close your OPENING PARAGRAPH with ONE short "
@@ -1052,26 +1078,31 @@ async def _main_stream(
             "[/FAVOURITING_HINT]"
         )
 
-    final_message_with_ref += (
-        "\n\n[INSTRUCTION] "
-        "NEVER start with: 'I am HipTraveler', 'I\u2019m HipTraveler', 'Your name is', 'Hi', 'Hello', or any self-introduction or greeting. "
-        "Jump directly into the content — bullet list, facts, or answer body. "
-        "If the user only greeted you or shared their name, respond with a single short question about their travel plans. "
-        "NEVER assume trip details the user has not stated — no occasion (romantic, honeymoon, family, "
-        "business), no trip length or number of days, no party size, no budget level, no travel style. "
-        "Do not open with a framing like 'for a romantic trip, 3-4 days is ideal' when the user only named "
-        "a destination: answer the question they actually asked about the place itself. If such a detail "
-        "would genuinely improve the answer, ASK for it in your closing question instead of inventing it. "
-        "If [USER_PREFERENCES] data is present and the query is about preferences, answer specifically from that data. [/INSTRUCTION]"
-    )
+    # Travel-answer rules — customer_service_agent carries its own style rules.
+    if not is_customer_service:
+        final_message_with_ref += (
+            "\n\n[INSTRUCTION] "
+            "NEVER start with: 'I am HipTraveler', 'I\u2019m HipTraveler', 'Your name is', 'Hi', 'Hello', or any self-introduction or greeting. "
+            "Jump directly into the content — bullet list, facts, or answer body. "
+            "If the user only greeted you or shared their name, respond with a single short question about their travel plans. "
+            "NEVER assume trip details the user has not stated — no occasion (romantic, honeymoon, family, "
+            "business), no trip length or number of days, no party size, no budget level, no travel style. "
+            "Do not open with a framing like 'for a romantic trip, 3-4 days is ideal' when the user only named "
+            "a destination: answer the question they actually asked about the place itself. If such a detail "
+            "would genuinely improve the answer, ASK for it in your closing question instead of inventing it. "
+            "If [USER_PREFERENCES] data is present and the query is about preferences, answer specifically from that data. [/INSTRUCTION]"
+        )
 
     # Routing:
+    #  - customer service      → customer_service_agent (FAQ knowledge base)
     #  - memory queries        → rag_format_agent  (answers from [USER_PREFERENCES])
     #  - real-time queries     → web_search_agent  (mandatory live search, no RAG noise)
     #  - RAG chunks present    → rag_format_agent
     #  - no chunks, not r-t    → web_search_agent
     if _is_followup:
         agent_name = "rag_format_agent"
+    elif is_customer_service:
+        agent_name = "customer_service_agent"
     elif (validation_result is not None
           and not isinstance(validation_result, Exception)
           and validation_result.final_output.isMemoryQuery):
@@ -1085,10 +1116,11 @@ async def _main_stream(
 
     # One-line routing decision — explains exactly why this agent was chosen.
     _log.info(
-        "[ROUTE] agent=%s | isRealtime=%s | isMemoryQuery=%s | rag_chunks=%d | query=%r",
+        "[ROUTE] agent=%s | isRealtime=%s | isMemoryQuery=%s | isCustomerService=%s | rag_chunks=%d | query=%r",
         agent_name,
         is_realtime,
         (validation_result.final_output.isMemoryQuery if validation_result and not isinstance(validation_result, Exception) else False),
+        is_customer_service,
         len(rag_chunks),
         request.message,
     )

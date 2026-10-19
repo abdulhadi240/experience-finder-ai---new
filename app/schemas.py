@@ -110,6 +110,7 @@ class global_input_guardrail(BaseModel):  # noqa: N801 — name kept for existin
     reason: str
     isTravelRelated: bool
     isMemoryQuery: bool
+    isCustomerService: bool
     isRealtime: bool
     solution: str
 
