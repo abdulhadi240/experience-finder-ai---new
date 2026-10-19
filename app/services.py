@@ -166,6 +166,131 @@ async def build_rag_payload(
 
 # ─── LLM-Generated Loading Statements ───────────────────────────
 
+# ─── Support answer leak guard ───────────────────────────────────
+# customer_service_agent answers from file_search, and despite its prompt it
+# sometimes says "the FAQ doesn't specify…" or pastes a citation that names an
+# internal file. Streamed text is held one sentence at a time; a sentence that
+# refers to its source is rewritten by nano before the user sees it.
+
+_CITATION_RE = re.compile(r'\s*(?:【[^】]*】|[^]*|\\ue200.*?\\ue201)')
+_OPEN_CITATION_RE = re.compile(r'\s*(?:【[^】]*|[^]*|\\ue200.*)$')
+_SOURCE_LEAK_RE = re.compile(
+    r"\bFAQs?\b|\bthe (?:provided |available |uploaded )?(?:documents?|files?|materials?)\b|\bdocumentation\b"
+    r"|knowledge base|search results?"
+    r"|\b(?:information|info|details|context)\s+(?:provided|available|given|here|"
+    r"I (?:have|can see|can access|have access to|found))"
+    r"|\b(?:provided|available)\s+(?:\w+\s+)?(?:information|info|details|resources)"
+    r"|\b(?:described|defined)\s+(?:for|in|as|here)\b|\b(?:is|are)(?:n'?t| not)\s+(?:\w+\s+)?defined\b"
+    r"|\bno (?:specific |explicit |direct )?(?:mention|information|info|details)\s+(?:of|about|on|regarding|available)"
+    r"|\b(?:is|are|was|were)(?:n'?t| not)\s+(?:specifically |explicitly |directly |clearly |currently )?"
+    r"(?:mentioned|covered|specified|outlined|detailed|listed|stated|documented|addressed)"
+    r"|\bdo(?:es)?(?:n'?t| not)\s+(?:specifically |explicitly |directly |clearly |currently |really )?"
+    r"(?:mention|specify|state|say|detail|outline|address|reference)\b"
+    # "…has no referral program mentioned." / "not listed anywhere" / "no specific mention that…"
+    r"|\b(?:mentioned|specified|listed|outlined|documented)(?=\s*[.,;]|\s+(?:here|anywhere)\b)"
+    r"|\bno (?:\w+ ){0,2}(?:mention|indication)\b|\b(?:option|program|feature|policy)\s+mentioned\b"
+    r"|\bwithout (?:any )?(?:specific |explicit )?mention\b|\b(?:is|are) described\b"
+    r"|\bdo(?:es)?(?:n'?t| not)\s+list\b"
+    # "details … aren't provided / described here" — the subject is the missing text itself
+    r"|\b(?:details?|information|info|specifics|instructions)\b[^.]{0,60}?\b(?:not|aren'?t|isn'?t)\s+"
+    r"(?:\w+\s+)?(?:provided|described|given|explained|available)\b"
+    r"|\b(?:described|explained|stated|outlined|covered)\s+here\b"
+    r"|\b(?:explicit|specific)\s+(?:instructions|details|information|mention)\s+(?:confirming|regarding)\b"
+    r"|\b(?:information|anything|nothing)\s+(?:indicating|suggesting|showing|that (?:says|shows|indicates))"
+    r"|\bfrom what I (?:have|can see|found)|\bbased on what I (?:have|found|can see)"
+    r"|\bI (?:don'?t|do not|can'?t|cannot) see\b|\bI'?m not seeing\b|\bI (?:couldn'?t|could not) find\b"
+    r"|\baccording to (?:the|my|our) (?:info|information|records|resources|help)",
+    re.IGNORECASE,
+)
+# Sentence ends inside JSON-escaped stream text: ". " / "? " / "! " or an escaped newline
+_SENTENCE_END_RE = re.compile(r'((?<=[.!?])\s+|\\n)')
+
+
+_REWRITE_PROMPT = (
+    "Rewrite this one sentence from HipTraveler's customer support chat. It must not refer to any source: "
+    "no FAQ, documents, files, materials, 'information provided/available', nothing being "
+    "'mentioned / listed / specified / covered / detailed', and no 'I don't see / couldn't find'.\n"
+    "Speak in first person as HipTraveler support, about the thing itself.\n"
+    "IMPORTANT: 'X isn't mentioned / specified' means support does NOT KNOW about X. Keep that uncertainty — "
+    "say 'I don't have details on X' or 'I'm not aware of X'. Never turn it into a definite "
+    "'HipTraveler doesn't offer X'.\n"
+    "Examples:\n"
+    "- 'Refund policies after six months are not specified.' → 'I don't have details on refunds after six months.'\n"
+    "- 'HipTraveler does not currently mention a student discount.' → 'I'm not aware of a student discount right now.'\n"
+    "- 'The FAQ doesn't say whether the eSIM supports 5G.' → 'I don't have details on 5G support for the eSIM.'\n"
+    "Keep every other fact, any markdown, and roughly the length. If the sentence states a real fact or "
+    "policy and does not talk about what some text says (e.g. 'Refunds are not provided for used eSIMs.', "
+    "'Mention your booking ID when you contact support.'), return it EXACTLY unchanged.\n"
+    "Return ONLY the sentence.\n\n"
+    "Sentence: "
+)
+
+
+async def _rewrite_leaky_sentence(sentence: str) -> str:
+    """Rewrite one JSON-escaped sentence so it doesn't mention its source."""
+    try:
+        plain = json.loads(f'"{sentence}"')
+    except ValueError:
+        plain = sentence
+    try:
+        rewritten = ""
+        # nano first; mini only if nano's version still leaks (rare, so cost stays tiny)
+        for model in ("gpt-4.1-nano", "gpt-4.1-mini"):
+            response = await asyncio.wait_for(_openai_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": _REWRITE_PROMPT + plain}],
+                max_tokens=200,
+                temperature=0,
+            ), timeout=4)
+            rewritten = response.choices[0].message.content.strip()
+            if rewritten and not _SOURCE_LEAK_RE.search(rewritten):
+                break
+        if not rewritten:
+            return sentence
+        # back into the stream's JSON-escaped form, keeping the original edge whitespace
+        lead = sentence[:len(sentence) - len(sentence.lstrip())]
+        return lead + json.dumps(rewritten, ensure_ascii=False)[1:-1]
+    except Exception:
+        return sentence  # never break the answer over the guard
+
+
+class _SupportLeakGuard:
+    """Holds streamed support text until a sentence ends, cleans it, then queues it."""
+
+    def __init__(self, queue: asyncio.Queue):
+        self._queue = queue
+        self._buf = ""
+
+    async def feed(self, text: str) -> None:
+        self._buf += text
+        last = None
+        for last in _SENTENCE_END_RE.finditer(self._buf):
+            pass
+        # nothing complete yet — but never hold a runaway sentence forever
+        if last is None and len(self._buf) < 600:
+            return
+        cut = last.end() if last is not None else len(self._buf)
+        # an unclosed citation stays buffered until it closes
+        open_cite = _OPEN_CITATION_RE.search(self._buf[:cut])
+        if open_cite:
+            cut = open_cite.start()
+        done, self._buf = self._buf[:cut], self._buf[cut:]
+        await self._emit(done)
+
+    async def flush(self) -> None:
+        done, self._buf = _OPEN_CITATION_RE.sub('', self._buf), ""
+        await self._emit(done)
+
+    async def _emit(self, text: str) -> None:
+        text = _CITATION_RE.sub('', text)
+        if not text:
+            return
+        parts = _SENTENCE_END_RE.split(text)  # sentences interleaved with their separators
+        for i in range(0, len(parts), 2):
+            if _SOURCE_LEAK_RE.search(parts[i]):
+                parts[i] = await _rewrite_leaky_sentence(parts[i])
+        await self._queue.put(''.join(parts))
+
 _ROBOTIC_OPENER_RE = re.compile(r"^\W*(acknowledging|processing|computing|scanning|searching)\b", re.I)
 # "Checking why your subscription renewed…", "verifying if your eSIM works…"
 _ACCOUNT_CLAIM_RE = re.compile(
@@ -580,6 +705,8 @@ async def stream_agent_to_queue(
 
         # Web search path: collect all emitted tokens so we can send them to the validator
         answer_parts = [] if agent_name == 'web_search_agent' else None
+        # Support answers come from file_search — never let the user see that
+        leak_guard = _SupportLeakGuard(queue) if agent_name == 'customer_service_agent' else None
 
         async for event in result.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
@@ -620,7 +747,10 @@ async def stream_agent_to_queue(
                     emit = pending[:-_SUFFIX_LEN]
                     emit = re.sub(r'\s*Source:\s*\S+', '', emit)
                     if emit:
-                        await queue.put(emit)
+                        if leak_guard:
+                            await leak_guard.feed(emit)
+                        else:
+                            await queue.put(emit)
                         if answer_parts is not None:
                             answer_parts.append(emit)
                     suffix_buf = pending[-_SUFFIX_LEN:]
@@ -632,9 +762,14 @@ async def stream_agent_to_queue(
             cleaned = re.sub(r'"?\s*\}?\s*$', '', suffix_buf)
             cleaned = re.sub(r'\s*Source:\s*\S+', '', cleaned)
             if cleaned:
-                await queue.put(cleaned)
+                if leak_guard:
+                    await leak_guard.feed(cleaned)
+                else:
+                    await queue.put(cleaned)
                 if answer_parts is not None:
                     answer_parts.append(cleaned)
+        if leak_guard:
+            await leak_guard.flush()
 
         # Web search path: now that the full answer is ready, send question + answer
         # to the validator so it researches only the places web search returned.
