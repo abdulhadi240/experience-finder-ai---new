@@ -57,6 +57,33 @@ async def unified_chat(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Customer Support Chat Route ──────────────────────────────────
+# Same request body, SSE format, credits gate and validation as /chat, but
+# every message is answered by customer_service_agent (FAQ vector store) —
+# never the trip-planning or travel agents. `param` and `plan` are ignored.
+
+@router.post("/chat/support")
+async def support_chat(request: QueryRequest):
+    try:
+        thread_id  = request.threadId or uuid.uuid4().hex
+        request_id = new_request_id()  # server-controlled — see unified_chat
+
+        history: list[dict] = await redis_history.fetch_recent_interactions(
+            thread_id, limit=_REDIS_CTX_LIMIT
+        )
+
+        final_message = build_conversation_context(request, history)
+
+        return StreamingResponse(
+            _main_stream(request, thread_id, request.param, final_message, history=history,
+                         request_id=request_id, support_only=True),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ─── User Management Routes ───────────────────────────────────────
 
 @router.get("/delete_user")

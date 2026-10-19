@@ -542,6 +542,25 @@ def get_error_stream_response(reason: str, solution: str):
 
 # ─── Main Stream Generator ────────────────────────────────────────
 
+# ── /chat/support block messages ──────────────────────────────────
+# The /chat block copy pivots back to travel; on the support endpoint the
+# user came for help with HipTraveler, so point them there instead.
+_SUPPORT_SCOPE_MESSAGE = (
+    "I can only help with questions about HipTraveler here. Ask me about your account, "
+    "Premium, bookings, payments, refunds, or the app — or reach our team at "
+    "support@hiptraveler.com."
+)
+_SUPPORT_PII_MESSAGE = (
+    "To keep your information safe, please avoid sharing personal details like phone numbers, "
+    "email addresses, card numbers, or ID numbers in this chat. Describe your issue without them, "
+    "or contact support@hiptraveler.com if our team needs those details to help."
+)
+_SUPPORT_OFF_TOPIC_MESSAGE = (
+    "I'm HipTraveler's support assistant, so I can only help with questions about HipTraveler — "
+    "your account, Premium, bookings, payments, refunds, or using the app. What can I help you with?"
+)
+
+
 async def _main_stream(
     request: QueryRequest,
     thread_id: str,
@@ -549,7 +568,14 @@ async def _main_stream(
     final_message: str,
     history: list[dict] | None = None,
     request_id: str | None = None,
+    support_only: bool = False,
 ) -> AsyncGenerator[str, None]:
+    """SSE stream for one chat message.
+
+    support_only=True is the /chat/support path: same credits gate, scope gate,
+    PII check and validation agent, but every valid message is answered by
+    customer_service_agent — no trip planning, RAG, guide or travel agents.
+    """
     start_time = time.time()
 
     # ── t=0: client gets [STARTED] before any network calls ──────
@@ -567,7 +593,8 @@ async def _main_stream(
     # billed as EXPLORE_TRAVEL. Harmless if the two share a credit pool; if they
     # do not, that branch needs a refund + re-reserve. Open question with HT.
     _request_id = request_id or _credits.new_request_id()
-    _usage_type = _credits.usage_type_for(param, bool(request.plan))
+    _usage_type = ("CUSTOMER_SERVICE" if support_only
+                   else _credits.usage_type_for(param, bool(request.plan)))
     # is_pro is client-supplied and forgeable — it must never skip this call.
     # The credits service is the only authority on entitlement.
     _reservation = await _credits.reserve(
@@ -616,8 +643,8 @@ async def _main_stream(
 
     # ── Fast-path: plan=True skips ALL middleware ────────────────
     # No PII check, no RAG, no validation, no loaders, no streaming.
-    # Returns the trip plan JSON directly and exits.
-    if request.plan:
+    # Returns the trip plan JSON directly and exits. Never on the support path.
+    if request.plan and not support_only:
         try:
             ctx_str, ctx_pois = _extract_explore_context(history)
             enriched = final_message + ctx_str
@@ -655,7 +682,8 @@ async def _main_stream(
         return
 
     # ── Detect follow-up reply — skip RAG when user is answering a mindset question ──
-    _is_followup = _is_conversational_reply(request.message, history)
+    # Support threads have no travel follow-up cycle — always validate.
+    _is_followup = False if support_only else _is_conversational_reply(request.message, history)
     _fup_count_pre = _count_followup_turns(history)  # needed for USER_PREFERENCES injection at T4
 
     # ── Fire ALL tasks at t=0 — RAG, validation, PII, loaders, scope, Zep all in parallel ──
@@ -696,8 +724,9 @@ async def _main_stream(
         await set_rag_cache(_cache_key, rag_res, guide_res)
         return rag_res, guide_res
 
-    # Follow-up replies skip RAG and LLM loaders entirely
-    if not _is_followup:
+    # Follow-up replies skip RAG and LLM loaders entirely; so does support —
+    # place data is never used there and the LLM loaders are travel-themed.
+    if not _is_followup and not support_only:
         loading_task  = asyncio.create_task(generate_loading_statements(final_message, "explore"))
         rag_task      = asyncio.create_task(_summarize_then_fetch())
     else:
@@ -711,13 +740,24 @@ async def _main_stream(
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
-    _instant_loader = get_instant_loading_message("explore") if not _is_followup else "On it…"
+    if support_only:
+        _instant_loader = "Checking our help center…"
+    elif _is_followup:
+        _instant_loader = "On it…"
+    else:
+        _instant_loader = get_instant_loading_message("explore")
     _shown_loaders: list[str] = [_instant_loader]
     yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
     yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
 
     if _is_followup:
         pass  # no RAG, no validation — nothing to wait for
+    elif support_only:
+        # Validation only — no RAG, no LLM loaders to tick through.
+        try:
+            await validation_task
+        except Exception:
+            pass  # surfaced below via validation_task.result()
     else:
         # ── Pre-fetch LLM loaders while rag+validation run in background ─
         _llm_msgs: list[str] = []
@@ -773,6 +813,8 @@ async def _main_stream(
         scope_error = None
     if scope_error:
         _refund_task()  # blocked by our own scope gate — no agent output delivered
+        if support_only:
+            scope_error = _SUPPORT_SCOPE_MESSAGE
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(scope_error.split()):
             yield f"data: {json.dumps({'content': word if i == 0 else ' ' + word})}\n\n"
@@ -787,7 +829,7 @@ async def _main_stream(
         pii_detected = False
     if pii_detected:
         _refund_task()  # blocked by our own PII check — no agent output delivered
-        pii_message = (
+        pii_message = _SUPPORT_PII_MESSAGE if support_only else (
             "To keep your information safe, please avoid sharing personal details "
             "like phone numbers, email addresses, or ID numbers in your messages. "
             "Feel free to ask me anything about travel destinations and I'll be happy to help!"
@@ -847,7 +889,10 @@ async def _main_stream(
             and not validation_result.final_output.isValid):
         _refund_task()  # blocked as non-travel — no agent output delivered
         solution = validation_result.final_output.solution
-        if len(solution) < 50:
+        if support_only:
+            # The validator's own reply pivots to travel — not what support users want.
+            solution = _SUPPORT_OFF_TOPIC_MESSAGE
+        elif len(solution) < 50:
             solution = "Let's keep it travel-focused. What would you like to explore next?"
         yield f"data: {json.dumps({'content': '{\"answer\":\"'})}\n\n"
         for i, word in enumerate(solution.split()):
@@ -859,8 +904,9 @@ async def _main_stream(
     # ── Customer service (isCustomerService=True) ────────────────
     # Support/FAQ questions about HipTraveler itself. They skip trip planning
     # and every travel-context injection below (RAG, guide, POI hints) and go
-    # straight to customer_service_agent.
-    is_customer_service = bool(
+    # straight to customer_service_agent. On the support path every message
+    # that passed validation goes there.
+    is_customer_service = support_only or bool(
         validation_result is not None
         and not isinstance(validation_result, Exception)
         and getattr(validation_result.final_output, "isCustomerService", False)

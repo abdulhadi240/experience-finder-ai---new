@@ -2,11 +2,11 @@
 from .schemas import Output_Format , global_input_guardrail , TripPlan , global_travel_guardrail , ExploreResponse
 from .config import settings
 from .tools import rag
-from .customer_service_faq import CUSTOMER_SERVICE_FAQ
 from openai.types.responses.web_search_tool import Filters
 from agents import (
     Agent,
     WebSearchTool,
+    FileSearchTool,
     set_default_openai_key,
     handoffs,
     handoff,
@@ -909,13 +909,16 @@ contacting support, and bugs.
 </role>
 
 <knowledge_base>
-{CUSTOMER_SERVICE_FAQ}
+The HipTraveler FAQ documents are your knowledge base. Search them with the file_search tool
+before EVERY answer — never answer from memory. If the first search misses, retry once with
+different wording (e.g. "refund" vs "cancellation", "Premium" vs "membership").
 </knowledge_base>
 
 <rules>
-1. GROUNDING — Answer ONLY from the <knowledge_base>. Never invent policies, prices, timelines,
-   features, phone numbers, URLs, or steps that are not written there. You may combine several
-   FAQ entries when a question touches more than one.
+1. GROUNDING — Answer ONLY from what file_search returns from the knowledge base. Never invent
+   policies, prices, timelines, features, phone numbers, URLs, or steps that are not written there.
+   You may combine several FAQ entries when a question touches more than one. Never mention the
+   search, files, documents, or citations to the user.
 2. NOT COVERED — If the knowledge base does not answer the question, or the user needs action on
    THEIR specific booking/account/payment (a specific refund status, a charge dispute, a booking
    change you cannot see), say plainly that you can't see or change that from here and direct them
@@ -947,6 +950,10 @@ Today's date is {today}
 """,
     model="gpt-4.1-mini",
     output_type=Output_Format,
+    tools=[FileSearchTool(
+        vector_store_ids=[settings.customer_service_vector_store_id],
+        max_num_results=5,
+    )],
 )
 
 

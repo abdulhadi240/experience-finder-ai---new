@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # a bound still matters so a stalled backend can't pile up open sockets.
     preload_inventory_timeout_seconds: float = Field(default=5.0, alias="PRELOAD_INVENTORY_TIMEOUT_SECONDS")
 
+    # ── Customer service knowledge base ───────────────────────────
+    # OpenAI vector store holding the HipTraveler FAQ documents. The customer
+    # service agent answers from it via the file_search tool.
+    customer_service_vector_store_id: str = Field(
+        default="vs_6ad624c164408191873dca74e0c878e9", alias="CUSTOMER_SERVICE_VECTOR_STORE_ID"
+    )
+
     # ── Agent deadlines ───────────────────────────────────────────
     # Without these a hung agent never resolves: the user waits forever and the
     # credit is never handed back. A timeout is a refundable hard-fail.
