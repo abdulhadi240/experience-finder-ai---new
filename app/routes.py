@@ -7,10 +7,9 @@ from fastapi.responses import StreamingResponse
 
 from .schemas import QueryRequest, UserCreateRequest
 from .memory import delete_user, create_new_user, get_user_memory_for_engage
-from .helpers import build_conversation_context, _main_stream, generate_engage_stream
+from .helpers import _main_stream, generate_engage_stream
 from .credits import new_request_id
 from .config import settings
-from . import redis_history
 
 router = APIRouter()
 
@@ -38,17 +37,11 @@ async def unified_chat(request: QueryRequest):
         # enforce. The key must stay server-controlled.
         request_id = new_request_id()
 
-        # ── Load conversation history from Redis keyed by thread_id ──
-        # Redis is now the only source of history — the frontend no longer
-        # supplies old_interactions as a fallback.
-        history: list[dict] = await redis_history.fetch_recent_interactions(
-            thread_id, limit=_REDIS_CTX_LIMIT
-        )
-
-        final_message = build_conversation_context(request, history)
-
+        # Conversation history (Redis is the only source — the frontend no longer
+        # supplies old_interactions) is loaded inside the stream, so the client
+        # gets its first byte and loader before that round trip.
         return StreamingResponse(
-            _main_stream(request, thread_id, param, final_message, history=history,
+            _main_stream(request, thread_id, param, history_limit=_REDIS_CTX_LIMIT,
                          request_id=request_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -68,14 +61,8 @@ async def support_chat(request: QueryRequest):
         thread_id  = request.threadId or uuid.uuid4().hex
         request_id = new_request_id()  # server-controlled — see unified_chat
 
-        history: list[dict] = await redis_history.fetch_recent_interactions(
-            thread_id, limit=_REDIS_CTX_LIMIT
-        )
-
-        final_message = build_conversation_context(request, history)
-
         return StreamingResponse(
-            _main_stream(request, thread_id, request.param, final_message, history=history,
+            _main_stream(request, thread_id, request.param, history_limit=_REDIS_CTX_LIMIT,
                          request_id=request_id, support_only=True),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -120,7 +107,7 @@ async def health_check():
 async def memory_engage(user_id: str = Query(..., description="The user's ID")):
     """
     Stream a personalised re-engagement question token by token.
-    Fetches Zep user summary, then streams gpt-4.1-nano output as SSE.
+    Fetches Zep user summary, then streams gpt-5.4-nano output as SSE.
 
     With long-term memory off this is a no-op: no summary is fetched and the
     stream closes immediately, so the UI shows no "welcome back" prompt built

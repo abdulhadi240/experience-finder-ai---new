@@ -112,7 +112,8 @@ def _extract_country_from_query(query: str, openai_key: str) -> Optional[str]:
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "gpt-4.1-nano",
+        "model": "gpt-5.4-nano",
+        "reasoning_effort": "none",
         "temperature": 0,
         "messages": [
             {

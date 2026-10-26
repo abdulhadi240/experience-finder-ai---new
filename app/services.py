@@ -20,14 +20,15 @@ _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 async def summarize_for_rag(message: str) -> str:
     """
-    Ultra-fast gpt-4.1-nano call that converts the user message (which may
+    Ultra-fast gpt-5.4-nano call that converts the user message (which may
     contain conversation history or pronouns like 'there'/'it') into a clean,
     standalone search query for RAG.
     Falls back to the original message on any failure.
     """
     try:
         response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[
                 {
                     "role": "system",
@@ -47,7 +48,7 @@ async def summarize_for_rag(message: str) -> str:
                 },
                 {"role": "user", "content": message},
             ],
-            max_tokens=40,
+            max_completion_tokens=40,
             temperature=0.0,
         )
         result = response.choices[0].message.content.strip()
@@ -70,7 +71,7 @@ async def build_rag_payload(
     fallback_filters: str = "",
 ) -> dict:
     """
-    Ultra-fast gpt-4.1-nano call that parses the user's LATEST message (which may
+    Ultra-fast gpt-5.4-nano call that parses the user's LATEST message (which may
     contain conversation history / pronouns) into a complete, structured RAG payload.
 
     Returns a dict with: query, category, top_k, location, filters.
@@ -98,7 +99,8 @@ async def build_rag_payload(
     }
     try:
         response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[
                 {
                     "role": "system",
@@ -130,7 +132,7 @@ async def build_rag_payload(
                 },
                 {"role": "user", "content": message},
             ],
-            max_tokens=120,
+            max_completion_tokens=120,
             temperature=0.0,
             response_format={"type": "json_object"},
         )
@@ -235,12 +237,16 @@ async def _rewrite_leaky_sentence(sentence: str) -> str:
     try:
         rewritten = ""
         # nano first; mini only if nano's version still leaks (rare, so cost stays tiny)
-        for model in ("gpt-4.1-nano", "gpt-4.1-mini"):
+        for model, extra in (
+            ("gpt-5.4-nano", {"reasoning_effort": "none"}),  # gpt-4.1-mini rejects this param
+            ("gpt-4.1-mini", {}),
+        ):
             response = await asyncio.wait_for(_openai_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": _REWRITE_PROMPT + plain}],
-                max_tokens=200,
+                max_completion_tokens=200,
                 temperature=0,
+                **extra,
             ), timeout=4)
             rewritten = response.choices[0].message.content.strip()
             if rewritten and not _SOURCE_LEAK_RE.search(rewritten):
@@ -292,11 +298,6 @@ class _SupportLeakGuard:
         await self._queue.put(''.join(parts))
 
 _ROBOTIC_OPENER_RE = re.compile(r"^\W*(acknowledging|processing|computing|scanning|searching)\b", re.I)
-# "Checking why your subscription renewed…", "verifying if your eSIM works…"
-_ACCOUNT_CLAIM_RE = re.compile(
-    r"\b(check|verif|review|confirm|access|inspect|locat|retriev|fetch)\w*\s+(?:\w+\s+){0,2}your\b", re.I
-)
-
 _NEUTRAL_LOADERS = [
     "Getting things ready for you…",
     "One sec, I'm right here…",
@@ -304,37 +305,49 @@ _NEUTRAL_LOADERS = [
 ]
 
 
-async def generate_loading_statements(message: str, param: str) -> list:
-    """
-    Call gpt-4.1-nano to produce 5 personalised loading statements for this specific query.
-    Runs as a concurrent asyncio.Task — adds zero wall-clock latency to the pipeline.
+# Customer support waits get the same fixed, plain-spoken lines for every topic —
+# no LLM, sent once each at these times (seconds after the first one).
+SUPPORT_WAIT_MESSAGES: tuple[tuple[float, str], ...] = (
+    (0.0, "One moment…"),
+    (2.0, "Let me check that for you."),
+    (5.0, "Thanks for waiting."),
+)
 
-    Returns a list of up to 5 strings.
-    Falls back to [] on any failure; caller uses the static instant message + a
-    deep-research fallback when these run out.
+
+async def generate_loading_statements(message: str, param: str) -> tuple[str, list]:
+    """
+    Pick the loader style for this message and, for travel, write 5 personalised
+    loaders with gpt-5.4-nano. Runs as a concurrent asyncio.Task — adds zero
+    wall-clock latency to the pipeline.
+
+    Returns (kind, messages):
+      "support" → [] — the caller shows SUPPORT_WAIT_MESSAGES on its timer
+      "travel"  → up to 5 LLM loaders ([] on failure)
+      "neutral" → fixed topic-free lines for greetings
     """
     if param == "neutral":
         # Greetings — nano invents "top picks for your destination" given any room
-        return list(_NEUTRAL_LOADERS)
+        return "neutral", list(_NEUTRAL_LOADERS)
     if param == "support":
-        return await _generate_support_loading_statements(message)
+        return "support", []
     if param == "plan":
-        return await _generate_travel_loading_statements(message, "trip planner")
+        return "travel", await _generate_travel_loading_statements(message, "trip planner")
 
     # /chat: the router only decides support vs travel after validation, and no
     # keyword list catches every support question ("can I pay with paypal").
-    # Classify and write both loader sets in parallel — same wall-clock as one call.
-    kind, travel, support = await asyncio.gather(
+    # Classify while the travel loaders are written — same wall-clock as one call.
+    kind, travel = await asyncio.gather(
         _classify_loader_topic(message),
         _generate_travel_loading_statements(message, "explore"),
-        _generate_support_loading_statements(message, maybe_travel=True),
         return_exceptions=True,
     )
     if isinstance(kind, Exception) or kind is None:
-        # classifier failed — fall back to the keyword hint from the caller
+        # classifier failed — fall back to the keyword hint from the caller. The
+        # support lines are plain enough to sit fine under a travel answer too.
         kind = "support" if param == "unsure" else "travel"
-    picked = support if kind == "support" else travel
-    return [] if isinstance(picked, Exception) else picked
+    if kind == "support":
+        return "support", []
+    return "travel", [] if isinstance(travel, Exception) else travel
 
 
 async def _classify_loader_topic(message: str) -> str | None:
@@ -396,9 +409,10 @@ async def _generate_travel_loading_statements(message: str, mode: str) -> list:
 
     try:
         response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=250,
+            max_completion_tokens=250,
             temperature=0.8,
         )
         raw      = response.choices[0].message.content.strip()
@@ -413,62 +427,6 @@ async def _generate_travel_loading_statements(message: str, mode: str) -> list:
     return []
 
 
-async def _generate_support_loading_statements(message: str, maybe_travel: bool = False) -> list:
-    """Loaders for HipTraveler support questions — about the help topic, never travel picks.
-
-    maybe_travel=True is /chat, where a support keyword ("cancellation", "booking")
-    can still belong to a travel question; the model falls back to generic loaders then.
-    """
-    travel_rule = (
-        "- If the newest message is actually a TRAVEL question (places, hotels to stay at, things to do, "
-        "e.g. 'hotels in Rome with free cancellation'), ignore the support framing and write short generic "
-        "loaders with no place names (e.g. 'Pulling the good options together…').\n"
-        if maybe_travel else ""
-    )
-    prompt = (
-        f"HipTraveler customer support conversation (may include prior turns; newest message is last):\n{message}\n\n"
-        "Write exactly 5 short loading messages (5–9 words each) to display while the support assistant "
-        "looks up the answer in HipTraveler's help center.\n"
-        "Rules:\n"
-        "- Name the specific topic of the NEWEST question (e.g. Premium cancellation, hotel refunds, "
-        "loyalty points, eSIM setup, login problems — these are only examples, never mention one the user "
-        "didn't ask about). If the question is vague or just a greeting, keep them topic-free "
-        "(e.g. 'Getting the right answer for you…', 'One sec, I'm here to help…').\n"
-        f"{travel_rule}"
-        "- The assistant only reads help articles. It can NOT see the user's account, bookings, payments, "
-        "transactions, device, or eSIM/activation status — so never say it is checking, verifying, reviewing, "
-        "or confirming anything of theirs (bad: 'Checking your booking details…', 'Verifying recent transactions…', "
-        "'Confirming device compatibility…', 'Locating details on your past orders…'). Frame every loader around "
-        "the help topic or 'how to' — good: 'Looking up how double charges get refunded…', "
-        "'Finding how to view past orders…'.\n"
-        "- Stick to exactly what the user described — don't add details (they said 'crashing', not 'lost').\n"
-        "- Never invent policies, timelines, or outcomes — the loaders only say what is being looked up.\n"
-        "- No destinations, places, travel recommendations, or 'best options/picks' language.\n"
-        "- Each message should feel like progress: finding the help topic → reading the details → "
-        "pulling the steps together → almost ready. The last one is just 'Almost ready with your answer…' "
-        "or similar — never 'finalizing' a refund, cancellation, transfer or anything else.\n"
-        "- Write naturally; never repeat a word back to back.\n"
-        "- NEVER use: 'processing', 'computing', 'scanning', 'searching', or stage labels.\n"
-        "- Tone: warm, calm, helpful.\n"
-        'Return ONLY valid JSON: {"messages": ["…", "…", "…", "…", "…"]}'
-    )
-    try:
-        response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-mini",  # nano slips into "checking your account…" wording
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.7,
-        )
-        stmts = json.loads(response.choices[0].message.content.strip()).get("messages", [])
-        if isinstance(stmts, list) and len(stmts) >= 1:
-            # The agent can't see their account — drop the odd "Checking your…" nano still writes
-            return [str(s) for s in stmts[:5]
-                    if not _ROBOTIC_OPENER_RE.match(str(s)) and not _ACCOUNT_CLAIM_RE.search(str(s))]
-    except Exception:
-        pass
-    return []
-
-
 # ─── Instant First Loading Statement (fires at t=0) ──────────────
 
 _INSTANT_STATEMENTS = {
@@ -480,13 +438,7 @@ _INSTANT_STATEMENTS = {
         "Rounding up the top options…",
         "Sorting through what's actually worth it…",
     ],
-    'support': [
-        "Checking our help center…",
-        "Looking that up for you…",
-        "Getting the right answer for you…",
-        "Pulling up the details on this…",
-    ],
-    # /chat message that isn't clearly travel — may be support, so fits both
+    # Greetings — nothing to name yet
     'neutral': [
         "Looking into this for you…",
         "One sec — getting you the right answer…",
@@ -503,9 +455,11 @@ _INSTANT_STATEMENTS = {
 
 
 def get_instant_loading_message(param: str) -> str:
-    if param == 'unsure':
-        param = 'neutral'
-    mode = param if param in ('plan', 'support', 'neutral') else 'explore'
+    # Support, and /chat messages that may turn out to be support, open the
+    # fixed support sequence — "One moment…" reads fine above a travel answer too.
+    if param in ('support', 'unsure'):
+        return SUPPORT_WAIT_MESSAGES[0][1]
+    mode = param if param in ('plan', 'neutral') else 'explore'
     return random.choice(_INSTANT_STATEMENTS[mode])
 
 
@@ -590,13 +544,14 @@ def get_loading_message(stage: int, topic, param: str) -> str:
 
 async def check_pii_fast(message: str) -> bool:
     """
-    Lightweight PII-only guardrail using gpt-4.1-nano.
+    Lightweight PII-only guardrail using gpt-5.4-nano.
     Fires at t=0 in parallel with the starter — completes in ~150-200ms.
     Returns True if PII is detected (block the response).
     """
     try:
         response = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[
                 {
                     "role": "system",
@@ -610,7 +565,7 @@ async def check_pii_fast(message: str) -> bool:
                 },
                 {"role": "user", "content": message[:600]},
             ],
-            max_tokens=3,
+            max_completion_tokens=20,
             temperature=0.0,
         )
         result = response.choices[0].message.content.strip().upper()
@@ -640,9 +595,10 @@ async def stream_starter_to_queue(message: str, param: str, queue: asyncio.Queue
     )
     try:
         stream = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
+            max_completion_tokens=80,
             temperature=0.7,
             stream=True,
         )

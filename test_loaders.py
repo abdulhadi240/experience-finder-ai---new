@@ -1,12 +1,12 @@
 """
 Loader relevance test — 2 batches of 50 questions across /chat and /chat/support.
 
-For each question it runs the real loader pipeline (mode pick → instant loader →
-LLM loaders → fallback) without the server, then checks every loader the user
-could see:
-  1. hard rules (regex): no travel-pick language on support questions, no claims
-     of checking the user's own account/booking/payment/device, no banned words
-  2. an LLM judge (gpt-4.1) that the loader is relevant to what was asked
+For each question it runs the real loader pipeline (mode pick → classifier →
+instant loader → LLM loaders → fallback) without the server, then checks:
+  - support questions get the fixed SUPPORT_WAIT_MESSAGES (no LLM loaders)
+  - travel / greeting loaders pass hard rules (regex: no robotic openers, no
+    claims of checking the user's data, no travel picks on greetings) and an
+    LLM judge (gpt-4.1) that each one is relevant to what was asked
 
 Run:  python test_loaders.py            (all)
       python test_loaders.py -k esim    (questions containing "esim")
@@ -27,7 +27,9 @@ load_dotenv()
 from openai import AsyncOpenAI  # noqa: E402
 
 from app.helpers import _pick_loader_mode  # noqa: E402
-from app.services import generate_loading_statements, get_instant_loading_message  # noqa: E402
+from app.services import (  # noqa: E402
+    SUPPORT_WAIT_MESSAGES, generate_loading_statements, get_instant_loading_message,
+)
 
 # (path, expected kind, message, prior context or None)
 # kind: support = question about HipTraveler itself; travel = places/trips;
@@ -208,13 +210,16 @@ KIND_DESC = {
 _client = AsyncOpenAI()
 
 
-async def loaders_for(path: str, message: str, context: str | None) -> tuple[str, list[str]]:
+async def loaders_for(path: str, message: str, context: str | None) -> tuple[str, str, list[str]]:
+    """(mode, kind, loaders the user could see) — mirrors _main_stream."""
     mode = _pick_loader_mode(message, support_only=path == "support")
     final = f"{context}\n\nUser asked: {message}" if context else message
-    llm = await generate_loading_statements(final, mode)
-    # mirrors _main_stream: greetings get no fallback line
-    fallback = [] if mode == "neutral" else [FALLBACK]
-    return mode, [get_instant_loading_message(mode), *llm, *fallback]
+    kind, llm = await generate_loading_statements(final, mode)
+    if kind == "support":
+        return mode, kind, [text for _, text in SUPPORT_WAIT_MESSAGES]
+    # greetings get no fallback line
+    fallback = [] if kind == "neutral" else [FALLBACK]
+    return mode, kind, [get_instant_loading_message(mode), *llm, *fallback]
 
 
 def hard_fails(kind: str, message: str, loaders: list[str]) -> list[str]:
@@ -251,11 +256,15 @@ async def judge(kind: str, message: str, context: str | None, loaders: list[str]
 
 
 async def run_case(sem, case, run_no):
-    path, kind, message, context = case
+    path, expected, message, context = case
     async with sem:
-        mode, loaders = await loaders_for(path, message, context)
-        fails = hard_fails(kind, message, loaders) + await judge(kind, message, context, loaders)
-    return case, run_no, mode, loaders, fails
+        mode, kind, loaders = await loaders_for(path, message, context)
+        if expected == "support":
+            # Support always gets the fixed, LLM-free sequence — nothing to judge
+            fails = [] if kind == "support" else [f"expected the fixed support lines, got {kind} loaders"]
+        else:
+            fails = hard_fails(expected, message, loaders) + await judge(expected, message, context, loaders)
+    return case, run_no, f"{mode}→{kind}", loaders, fails
 
 
 async def main(args) -> int:

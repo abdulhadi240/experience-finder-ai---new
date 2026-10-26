@@ -23,6 +23,7 @@ from .services import (
     check_pii_fast,
     generate_loading_statements,
     get_instant_loading_message,
+    SUPPORT_WAIT_MESSAGES,
 )
 from .agents_ import validation_agent
 from .memory import setup_user_session, add_message, get_user_memory_for_engage
@@ -163,14 +164,22 @@ _TRAVEL_SIGNAL_RE = re.compile(
 )
 
 
+def _routes_to_support(validation_task: asyncio.Task) -> bool:
+    """True when a finished validation run sent the message to customer service."""
+    try:
+        return bool(getattr(validation_task.result().final_output, "isCustomerService", False))
+    except Exception:
+        return False
+
+
 def _pick_loader_mode(message: str, support_only: bool) -> str:
     """Loader style for this message. /chat only learns it's a support question
     after validation, so anything not clearly travel is "unsure": a neutral
     instant loader, then generate_loading_statements classifies the topic."""
+    if support_only:
+        return "support"  # every /chat/support message gets the same fixed lines
     if _GREETING_RE.match(message):
         return "neutral"  # nothing to name yet — topic-free loaders, no LLM call
-    if support_only:
-        return "support"
     if _SUPPORT_SIGNAL_RE.search(message) or _SUPPORT_LOADER_RE.search(message):
         return "unsure"
     if _TRAVEL_SIGNAL_RE.search(message):
@@ -466,7 +475,7 @@ async def streaming_with_loading(
     SSE generator used only when isTravelRelated=False.
 
     Two tasks fire at t=0:
-      • stream_starter_to_queue — gpt-4.1-nano streams a 2-3 sentence human-sounding
+      • stream_starter_to_queue — gpt-5.4-nano streams a 2-3 sentence human-sounding
                                    opener immediately so the user sees real content at once.
       • stream_agent_to_queue   — main agent runs in parallel, tokens land in token_queue.
 
@@ -606,8 +615,8 @@ async def _main_stream(
     request: QueryRequest,
     thread_id: str,
     param: str,
-    final_message: str,
-    history: list[dict] | None = None,
+    *,
+    history_limit: int,
     request_id: str | None = None,
     support_only: bool = False,
 ) -> AsyncGenerator[str, None]:
@@ -622,6 +631,26 @@ async def _main_stream(
 
     # ── t=0: client gets [STARTED] before any network calls ──────
     yield f"data: {json.dumps({'start_time': start_time, 'status': 'started', 'threadId': thread_id})}\n\n"
+
+    # Possible support question → "One moment…" right now, ahead of the credits
+    # and Redis round trips. It needs only the message, so it can't be wrong to send.
+    _loader_mode = _pick_loader_mode(request.message, support_only)
+    _early_loader: str | None = None
+    # (the plan=True fast path sends no loaders at all)
+    if _loader_mode in ("support", "unsure") and not (request.plan and not support_only):
+        _early_loader = get_instant_loading_message(_loader_mode)
+        yield f"data: {json.dumps({'loading': _early_loader})}\n\n"
+    _early_loader_at = time.time()
+
+    # ── Conversation history (Redis) ─────────────────────────────
+    # A thread the client didn't name is brand new — nothing to fetch.
+    history: list[dict] = []
+    if request.threadId:
+        try:
+            history = await _redis_history.fetch_recent_interactions(thread_id, limit=history_limit)
+        except Exception as e:
+            _log.warning("[REDIS] history fetch failed — answering without it | err=%s", e)
+    final_message = build_conversation_context(request, history)
 
     # ── CREDITS GATE — the enforcement boundary ──────────────────
     # Sits above every billable path in this function: the plan fast-path, the
@@ -769,11 +798,11 @@ async def _main_stream(
         await set_rag_cache(_cache_key, rag_res, guide_res)
         return rag_res, guide_res
 
-    # Follow-up replies skip RAG and LLM loaders entirely. Support gets its own
-    # FAQ-topic loaders and skips RAG — place data is never used there.
-    _loader_mode = _pick_loader_mode(request.message, support_only)
+    # Follow-up replies skip RAG and LLM loaders entirely. Support gets the fixed
+    # SUPPORT_WAIT_MESSAGES (no LLM) and skips RAG — place data is never used there.
     if not _is_followup:
-        loading_task  = asyncio.create_task(generate_loading_statements(final_message, _loader_mode))
+        loading_task  = (None if support_only else
+                         asyncio.create_task(generate_loading_statements(final_message, _loader_mode)))
         rag_task      = None if support_only else asyncio.create_task(_summarize_then_fetch())
     else:
         loading_task  = None
@@ -786,61 +815,108 @@ async def _main_stream(
     await asyncio.sleep(0)   # yield so all tasks go in-flight simultaneously
 
     # ── TTFB + instant first loader fire IMMEDIATELY ─────────────────
-    _instant_loader = get_instant_loading_message(_loader_mode) if not _is_followup else "On it…"
-    _shown_loaders: list[str] = [_instant_loader]
     yield f"data: {json.dumps({'time_to_first_byte': time.time() - start_time})}\n\n"
-    yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
+    if _early_loader:
+        _instant_loader = _early_loader  # already on screen — never sent twice
+    else:
+        _instant_loader = get_instant_loading_message(_loader_mode) if not _is_followup else "On it…"
+        yield f"data: {json.dumps({'loading': _instant_loader})}\n\n"
+    _shown_loaders: list[str] = [_instant_loader]
+
+    # Support waits run on a clock from the first line: each fixed message once,
+    # never restarted. "One moment…" was the first line whenever support was a
+    # possibility; otherwise the sequence picks up at its next line.
+    _support_wait_t0 = _early_loader_at if _early_loader else time.time()
+    _support_wait_next = 1 if _instant_loader == SUPPORT_WAIT_MESSAGES[0][1] else 0
+
+    def _support_wait_due_in() -> float | None:
+        """Seconds until the next support line is due; None when all are shown."""
+        if _support_wait_next >= len(SUPPORT_WAIT_MESSAGES):
+            return None
+        return max(0.0, _support_wait_t0 + SUPPORT_WAIT_MESSAGES[_support_wait_next][0] - time.time())
+
+    # Topic of the loaders: support is known up front on /chat/support; on /chat
+    # it comes back from the loader task's classifier (or validation, later).
+    _loader_kind: str | None = "support" if support_only else None
 
     if _is_followup:
         pass  # no RAG, no validation — nothing to wait for
     else:
         # ── Pre-fetch LLM loaders while rag+validation run in background ─
         _llm_msgs: list[str] = []
-        _llm_msgs_ready = False
+        _llm_msgs_ready = loading_task is None
+        # loader task blew up: same keyword-hint fallback the classifier uses
+        _loader_fallback_kind = "support" if _loader_mode == "unsure" else "travel"
         _deep_research_sent = False
-        try:
-            _llm_msgs = await asyncio.wait_for(asyncio.shield(loading_task), timeout=1.3)
-            _llm_msgs_ready = True
-        except asyncio.TimeoutError:
-            pass  # still running — will retry in the loop
-        except Exception:
-            _llm_msgs = []
-            _llm_msgs_ready = True
+        if loading_task is not None:
+            try:
+                _loader_kind, _llm_msgs = await asyncio.wait_for(asyncio.shield(loading_task), timeout=1.3)
+                _llm_msgs_ready = True
+            except asyncio.TimeoutError:
+                pass  # still running — will retry in the loop
+            except Exception:
+                _loader_kind, _llm_msgs = _loader_fallback_kind, []
+                _llm_msgs_ready = True
 
-        # ── Await RAG + validation, emitting one LLM loader per 1.5s tick ──
+        # ── Await RAG + validation: travel ticks one LLM loader per 1.5s;
+        #    support sends its fixed lines exactly when they fall due ──
+        # The loader task is watched too, so the topic is acted on the moment the
+        # classifier answers — not at the next 1.5s tick ("Let me check…" at 2.8s).
         _loader_index = 1
+        _next_travel_tick = time.time() + 1.5
         _pending = {t for t in (rag_task, validation_task) if t is not None}
         while _pending:
-            _, _pending = await asyncio.wait(_pending, timeout=1.5)
-            if _pending:  # still waiting — emit next loader
-                if not _llm_msgs_ready:
-                    try:
-                        if loading_task.done():
-                            _llm_msgs = loading_task.result() or []
-                        else:
-                            _llm_msgs = await asyncio.wait_for(
-                                asyncio.shield(loading_task), timeout=0.5
-                            )
-                        _llm_msgs_ready = True
-                    except asyncio.TimeoutError:
-                        pass
-                    except Exception:
-                        _llm_msgs = []
-                        _llm_msgs_ready = True
+            if _loader_kind == "travel" or _loader_kind == "neutral":
+                _wait = max(0.0, _next_travel_tick - time.time())
+            else:
+                # support, or topic still unknown: wake when the next support line
+                # is due (None → nothing left to show, wait for the tasks)
+                _wait = _support_wait_due_in()
+                if _loader_kind is None and _wait == 0.0:
+                    _wait = None  # line is due but topic unknown — wait for the classifier
+            _watch = _pending | ({loading_task} if not _llm_msgs_ready else set())
+            await asyncio.wait(_watch, timeout=_wait, return_when=asyncio.FIRST_COMPLETED)
+            _pending = {t for t in _pending if not t.done()}
+            # Customer service answers from the help-center file only — once
+            # validation routes there, drop the RAG lookup instead of waiting on it.
+            if rag_task is not None and validation_task.done() and _routes_to_support(validation_task):
+                rag_task.cancel()
+                _pending.discard(rag_task)
+                rag_task = None  # read below as "no RAG result"
+            if not _pending:
+                break
+            if not _llm_msgs_ready and loading_task.done():
+                try:
+                    _loader_kind, _llm_msgs = loading_task.result()
+                except Exception:
+                    _loader_kind, _llm_msgs = _loader_fallback_kind, []
+                _llm_msgs_ready = True
 
-                _llm_pos = _loader_index - 1
-                if _llm_pos < len(_llm_msgs):
-                    _msg: str | None = _llm_msgs[_llm_pos]
-                elif not _deep_research_sent and _loader_mode != "neutral":
-                    # Fits travel and support alike — the topic may still be unknown here
-                    _msg = "Still pulling this together — almost there…"
-                    _deep_research_sent = True
-                else:
-                    _msg = None  # deep-research already shown — stay silent
-                if _msg:
+            if _loader_kind is None:
+                continue  # topic not known yet — keep showing the first line
+            if _loader_kind == "support":
+                if _support_wait_due_in() == 0.0:
+                    _msg = SUPPORT_WAIT_MESSAGES[_support_wait_next][1]
+                    _support_wait_next += 1
                     _shown_loaders.append(_msg)
                     yield f"data: {json.dumps({'loading': _msg})}\n\n"
-                _loader_index += 1
+                continue
+
+            if time.time() < _next_travel_tick:
+                continue  # woke early (a task finished) — travel keeps its 1.5s rhythm
+            _next_travel_tick += 1.5
+            _llm_pos = _loader_index - 1
+            if _llm_pos < len(_llm_msgs):
+                _msg: str | None = _llm_msgs[_llm_pos]
+            elif not _deep_research_sent and _loader_mode != "neutral":
+                _msg = "Still pulling this together — almost there…"
+                _deep_research_sent = True
+            else:
+                _msg = None  # fallback already shown — stay silent
+            if _msg:
+                _shown_loaders.append(_msg)
+                yield f"data: {json.dumps({'loading': _msg})}\n\n"
+            _loader_index += 1
 
     # ── Scope gate (resolved by now — fired at t=0 in a thread) ─────
     try:
@@ -1225,32 +1301,31 @@ async def _main_stream(
     # ── Phase 2: stream main agent tokens ────────────────────────────
     # Loaders were already emitted during rag+validation wait — just stream now.
     # Exception: customer service spends several seconds in file_search before
-    # its first token, so keep ticking the remaining FAQ-topic loaders until then.
+    # its first token, so the fixed support lines keep their schedule until then.
+    # Nothing is sent once the first answer token is out.
     redis_answer_parts: list[str] = []
     stream_error = False
     answer_prefix_sent = False
-    # The /chat loaders were topic-classified, so the leftovers fit a support answer.
     _tick_loaders = is_customer_service and not _is_followup
-    _silent_for = 0.0
+    if _tick_loaders:
+        # Routed to support after travel loaders: carry on from "Let me check…"
+        _support_wait_next = max(_support_wait_next, 1)
+    _token_deadline = time.time() + _AGENT_TOKEN_TIMEOUT
 
     while True:
         try:
-            if _tick_loaders and not redis_answer_parts:
+            _due_in = _support_wait_due_in() if _tick_loaders and not redis_answer_parts else None
+            if _due_in is not None:
                 try:
-                    token = await asyncio.wait_for(token_queue.get(), timeout=1.5)
+                    token = await asyncio.wait_for(
+                        token_queue.get(), timeout=min(_due_in, max(0.0, _token_deadline - time.time()))
+                    )
                 except asyncio.TimeoutError:
-                    _silent_for += 1.5
-                    if _silent_for >= _AGENT_TOKEN_TIMEOUT:
+                    if time.time() >= _token_deadline:
                         raise  # same hard-fail as the plain wait below
-                    if not _llm_msgs_ready and loading_task.done():
-                        try:
-                            _llm_msgs = loading_task.result() or []
-                        except Exception:
-                            _llm_msgs = []
-                        _llm_msgs_ready = True
-                    if _loader_index - 1 < len(_llm_msgs):
-                        _msg = _llm_msgs[_loader_index - 1]
-                        _loader_index += 1
+                    if _support_wait_due_in() == 0.0:
+                        _msg = SUPPORT_WAIT_MESSAGES[_support_wait_next][1]
+                        _support_wait_next += 1
                         _shown_loaders.append(_msg)
                         yield f"data: {json.dumps({'loading': _msg})}\n\n"
                     continue
@@ -1361,7 +1436,8 @@ async def generate_engage_stream(context: str) -> AsyncGenerator[str, None]:
 
     try:
         stream = await _openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5.4-nano",
+            reasoning_effort="none",  # nano answers directly; reasoning ate the token cap
             messages=[
                 {
                     "role": "system",
@@ -1381,7 +1457,7 @@ async def generate_engage_stream(context: str) -> AsyncGenerator[str, None]:
                 },
                 {"role": "user", "content": f"User travel history:\n{context}"},
             ],
-            max_tokens=40,
+            max_completion_tokens=40,
             temperature=0.7,
             stream=True,
         )
